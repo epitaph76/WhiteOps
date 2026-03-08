@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import * as pty from "node-pty";
 
 import { AgentSpec, RunResult } from "../types";
+import { resolveCommandForSpawn } from "./command-resolver";
 
 interface SessionOptions {
   id: string;
@@ -29,8 +30,9 @@ export class CliSession extends EventEmitter {
     this.id = options.id;
     this.agent = options.agent;
     this.cwd = options.cwd;
+    const resolvedCommand = resolveCommandForSpawn(options.agent.command);
 
-    this.ptyProcess = pty.spawn(options.agent.command, options.agent.args, {
+    this.ptyProcess = pty.spawn(resolvedCommand, options.agent.args, {
       cwd: options.cwd ?? process.cwd(),
       env: process.env as Record<string, string>,
       name: "xterm-color",

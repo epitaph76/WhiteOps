@@ -1,8 +1,8 @@
 {
-  "name": "@whiteops/cli-bridge",
+  "name": "@whiteops/orchestrator",
   "version": "0.1.0",
   "private": true,
-  "description": "WhiteOps MVP debug service for local CLI agents",
+  "description": "WhiteOps MVP orchestrator service",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -11,8 +11,7 @@
   },
   "dependencies": {
     "dotenv": "^17.3.1",
-    "fastify": "^4.29.1",
-    "node-pty": "^1.0.0"
+    "fastify": "^4.29.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

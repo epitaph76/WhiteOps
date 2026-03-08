@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { BridgeConfig, RunOptions, RunResult, SessionSnapshot, AgentId } from "../types";
 import { CliSession } from "./cli-session";
 import { HttpError } from "../errors";
+import { runAgentOneShot } from "./one-shot-runner";
 
 interface SessionRecord {
   session: CliSession;
@@ -118,11 +119,25 @@ export class SessionManager {
     prompt: string,
     options: RunOptions & { cwd?: string } = {},
   ): Promise<RunResult> {
-    const session = this.createSession(agentId, options.cwd);
+    const spec = this.config.agents[agentId];
+    if (!spec) {
+      throw new HttpError(400, `Unsupported agent: ${agentId}`);
+    }
+
+    const normalized = this.normalizeRunOptions(options);
     try {
-      return await this.runInSession(session.id, prompt, options);
-    } finally {
-      this.closeSession(session.id);
+      return await runAgentOneShot(spec, {
+        prompt,
+        timeoutMs: normalized.timeoutMs,
+        cwd: options.cwd,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to run one-shot request";
+      throw new HttpError(
+        500,
+        `Cannot run ${spec.title} one-shot. Check command '${spec.command}'. ${message}`,
+      );
     }
   }
 
