@@ -1,0 +1,73 @@
+{
+  "savedAt": "2026-03-10T14:12:51.110597Z",
+  "baseUrl": "http://127.0.0.1:7081",
+  "graph": {
+    "graphId": "a4a2f45a-e8c4-410d-a5b7-e331c935259a",
+    "name": "Новая схема оркестрации",
+    "description": "",
+    "revision": 1,
+    "nodes": [
+      {
+        "id": "node-1773151916603282-df7061ad",
+        "type": "manager",
+        "label": "Менеджер Codex",
+        "position": {
+          "x": 360.0,
+          "y": 240.0
+        },
+        "config": {
+          "agentId": "codex",
+          "role": "manager",
+          "timeoutMs": 90000,
+          "retryDelayMs": 1000
+        }
+      },
+      {
+        "id": "node-1773151919504663-bc6128f1",
+        "type": "worker",
+        "label": "Воркер Qwen",
+        "position": {
+          "x": 792.0,
+          "y": 216.0
+        },
+        "config": {
+          "agentId": "qwen",
+          "role": "worker",
+          "timeoutMs": 120000,
+          "maxRetries": 1,
+          "retryDelayMs": 1500
+        }
+      },
+      {
+        "id": "node-1773151920957508-d42cfe28",
+        "type": "worker",
+        "label": "Воркер Qwen 2",
+        "position": {
+          "x": 624.0,
+          "y": 432.0
+        },
+        "config": {
+          "agentId": "qwen",
+          "role": "worker",
+          "timeoutMs": 120000,
+          "maxRetries": 1,
+          "retryDelayMs": 1500
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-1773151922573849-73b36a6a",
+        "fromNodeId": "node-1773151916603282-df7061ad",
+        "toNodeId": "node-1773151920957508-d42cfe28",
+        "relationType": "manager_to_worker"
+      },
+      {
+        "id": "edge-1773151936840547-095c7524",
+        "fromNodeId": "node-1773151916603282-df7061ad",
+        "toNodeId": "node-1773151919504663-bc6128f1",
+        "relationType": "manager_to_worker"
+      }
+    ]
+  }
+}

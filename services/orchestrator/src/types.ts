@@ -1,5 +1,6 @@
 export type AgentId = "codex" | "qwen";
 export type ExecutionMode = "bridge" | "api";
+export type AuthRole = "admin" | "user";
 
 export interface RunResult {
   output: string;
@@ -34,6 +35,18 @@ export interface ApiSettings {
   authToken?: string;
 }
 
+export interface AuthTokenBinding {
+  userId: string;
+  role: AuthRole;
+}
+
+export interface AuthSettings {
+  enabled: boolean;
+  header: string;
+  defaultUserId: string;
+  tokens: Record<string, AuthTokenBinding>;
+}
+
 export interface OrchestratorConfig {
   host: string;
   port: number;
@@ -44,4 +57,5 @@ export interface OrchestratorConfig {
   maxTimeoutMs: number;
   bridge: BridgeSettings;
   api: ApiSettings;
+  auth: AuthSettings;
 }

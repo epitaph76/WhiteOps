@@ -163,3 +163,72 @@ And return:
   "durationMs": 1234
 }
 ```
+
+## Graph Orchestration API (Backend for Visual Editor)
+
+### Graph entities in storage
+
+- `orchestration_graph`
+- `graph_node`
+- `graph_edge`
+
+### Graph CRUD and validation
+
+- `GET /graphs`
+- `POST /graphs`
+- `GET /graphs/:id`
+- `PUT /graphs/:id`
+- `POST /graphs/:id/validate`
+
+### Graph runs
+
+- `POST /graphs/:id/runs` (creates run bound to a specific graph revision)
+- `GET /graphs/:id/runs`
+- `GET /graphs/:id/runs/:runId`
+- `GET /graph-runs/:runId`
+- `POST /graph-runs/:runId/cancel`
+- `GET /graph-runs/:runId/events` (SSE realtime stream)
+
+Realtime event types:
+
+- `graph_run_started`
+- `node_status_changed`
+- `node_log_chunk`
+- `node_result_ready`
+- `graph_run_finished`
+
+### Node dialog API
+
+- `POST /nodes/:nodeId/chat`
+- `GET /nodes/:nodeId/messages`
+- `GET /nodes/:nodeId/logs`
+
+The run payload includes manager trace entries (task assignment, reason, confirmation status)
+and node artifacts (`diffPatch`, `stdout`, `stderr`, `resultFiles`).
+
+`POST /nodes/:nodeId/chat` body fields:
+
+- `message` (required)
+- `graphId` (optional, required only if node id is ambiguous)
+- `runId` (optional, to bind chat/logs to a graph run)
+- `timeoutMs` (optional)
+- `cwd` (optional)
+
+## Authentication and Access Control
+
+Authentication is token-based and can be enabled for graph/run/node endpoints:
+
+- `AUTH_ENABLED=true|false`
+- `AUTH_HEADER=Authorization`
+- `AUTH_TOKENS=token1:userId1[:role],token2:userId2[:role]`
+- `AUTH_DEFAULT_USER_ID=local-dev`
+
+Role values: `user`, `admin`.
+Access control is applied per graph owner + ACL (`editors`, `viewers`), and inherited by graph runs.
+By design, auth/ACL checks are applied to graph/run/node APIs.
+Legacy `/tasks/*` endpoints remain open for local dev UX.
+
+## Storage Model
+
+Current implementation uses in-memory storage for graphs/runs/messages/logs.
+After process restart all runtime data is lost.

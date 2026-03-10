@@ -1,24 +1,31 @@
-# Stack Decision (MVP)
+﻿# Stack Decision (MVP)
 
-Дата фиксации: `2026-03-06`
+Дата фиксации: `2026-03-09`
 
-## Принято
+## Текущее решение (реализовано)
 
-- Основной backend: `Node.js + TypeScript`
-- Отдельная debug-прослойка CLI bridge: `Node.js + TypeScript`
-- Транспорт для bridge MVP: `HTTP API` (расширяемо до `WebSocket`)
-- Работа с локальными CLI-сессиями: `node-pty`
-- Поддерживаемые агенты в первом MVP: `codex`, `qwen`
+- Основной backend orchestrator: `Node.js + TypeScript + Fastify`
+- Отдельная debug-прослойка CLI bridge: `Node.js + TypeScript + Fastify + node-pty`
+- Транспорт между orchestrator и bridge: `HTTP` (`POST /runs`)
+- Realtime для frontend: `SSE`
+- Поддерживаемые агенты в MVP: `codex`, `qwen`
+- Хранилище orchestrator: `in-memory`
 
-## Почему
+## Почему так
 
-- Быстрое прототипирование оркестрации без затрат на API в каждом цикле.
-- Явный контроль над сессиями, таймаутами и техническими логами.
-- Изоляция рисков: CLI-процессы живут в отдельном сервисе, не в публичном backend API.
+- Быстрое прототипирование оркестрации без API-расходов в каждом цикле.
+- Изоляция рисков: CLI-процессы и PTY вынесены в отдельный сервис (`cli-bridge`).
+- Простой и прозрачный runtime для отладки scheduler/logs/events.
 
-## Реализация
+## Что отложено
 
-- Сервис: `services/cli-bridge`
-- Список агентов и команды задаются через env:
-  - `AGENT_CODEX_CMD`, `AGENT_CODEX_ARGS`
-  - `AGENT_QWEN_CMD`, `AGENT_QWEN_ARGS`
+- `PostgreSQL`/персистентность для графов и запусков.
+- `Redis`/очереди фоновых задач.
+- Production-auth (IAM/SSO/JWT rotation) вместо простого token-based доступа.
+
+## Конфигурация агентов
+
+Агенты bridge задаются через env:
+
+- `AGENT_CODEX_CMD`, `AGENT_CODEX_ARGS`
+- `AGENT_QWEN_CMD`, `AGENT_QWEN_ARGS`

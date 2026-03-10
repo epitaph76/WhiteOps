@@ -1,0 +1,55 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Runtime / logs
+*.log
+logs/
+.run-logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+.turbo/
+.cache/
+*.tsbuildinfo
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+**/build/
+
+# Flutter platform-generated
+apps/orchestrator_desktop/windows/flutter/ephemeral/
+apps/orchestrator_desktop/windows/flutter/generated_plugin_registrant.cc
+apps/orchestrator_desktop/windows/flutter/generated_plugin_registrant.h
+apps/orchestrator_desktop/windows/flutter/generated_plugins.cmake
+apps/orchestrator_desktop/macos/Flutter/ephemeral/
+apps/orchestrator_desktop/linux/flutter/ephemeral/
+apps/orchestrator_desktop/linux/flutter/generated_plugin_registrant.cc
+apps/orchestrator_desktop/linux/flutter/generated_plugin_registrant.h
+apps/orchestrator_desktop/linux/flutter/generated_plugins.cmake
+
+# Test artifacts
+*.tmp
+*.temp

@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { ExecutionMode, OrchestratorConfig } from "./types";
+import { AuthRole, ExecutionMode, OrchestratorConfig } from "./types";
 
 function parseArgs(input: string): string[] {
   const source = input.trim();
@@ -110,6 +110,55 @@ function readMode(): ExecutionMode {
   throw new Error("EXECUTION_MODE must be one of: bridge, api");
 }
 
+function parseAuthRole(input: string | undefined): AuthRole {
+  if (!input) {
+    return "user";
+  }
+
+  const normalized = input.trim().toLowerCase();
+  if (normalized === "admin" || normalized === "user") {
+    return normalized;
+  }
+
+  throw new Error(`Unsupported auth role '${input}' in AUTH_TOKENS`);
+}
+
+function parseAuthTokens(input: string | undefined): Record<string, { userId: string; role: AuthRole }> {
+  if (!input || !input.trim()) {
+    return {};
+  }
+
+  const tokens: Record<string, { userId: string; role: AuthRole }> = {};
+  const entries = input
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    const [token, userId, role] = entry.split(":");
+    if (!token || !userId) {
+      throw new Error(
+        "AUTH_TOKENS format must be token:userId[:role],token2:userId2[:role]",
+      );
+    }
+
+    const normalizedToken = token.trim();
+    const normalizedUserId = userId.trim();
+    if (!normalizedToken || !normalizedUserId) {
+      throw new Error(
+        "AUTH_TOKENS format must be token:userId[:role],token2:userId2[:role]",
+      );
+    }
+
+    tokens[normalizedToken] = {
+      userId: normalizedUserId,
+      role: parseAuthRole(role),
+    };
+  }
+
+  return tokens;
+}
+
 function resolveDefaultBridgeCwd(): string {
   return path.resolve(__dirname, "..", "..", "cli-bridge");
 }
@@ -156,6 +205,12 @@ export function loadConfig(): OrchestratorConfig {
       requestTimeoutMs: readNumber("API_REQUEST_TIMEOUT_MS", 180_000),
       authHeader: readString("API_AUTH_HEADER", "Authorization"),
       authToken: readOptionalString("API_AUTH_TOKEN"),
+    },
+    auth: {
+      enabled: readBoolean("AUTH_ENABLED", false),
+      header: readString("AUTH_HEADER", "Authorization"),
+      defaultUserId: readString("AUTH_DEFAULT_USER_ID", "local-dev"),
+      tokens: parseAuthTokens(readOptionalString("AUTH_TOKENS")),
     },
   };
 
