@@ -175,6 +175,10 @@ function resolveDefaultBridgeCwd(): string {
   return path.resolve(__dirname, "..", "..", "cli-bridge");
 }
 
+function resolveDefaultGraphStorePath(): string {
+  return path.resolve(__dirname, "..", "..", "..", ".run-logs", "graph-store.json");
+}
+
 export function loadConfig(): OrchestratorConfig {
   const managerTimeoutMs = readNumber("MANAGER_TIMEOUT_MS", 60_000);
   const workerTimeoutMs = readNumber("WORKER_TIMEOUT_MS", 120_000);
@@ -194,6 +198,12 @@ export function loadConfig(): OrchestratorConfig {
     port: readNumber("PORT", 7081),
     mode,
     defaultCwd: readOptionalString("DEFAULT_CWD"),
+    graphStorePath: readString("GRAPH_STORE_PATH", resolveDefaultGraphStorePath()),
+    graphMaxParallelNodes: readNumber("GRAPH_MAX_PARALLEL_NODES", 5),
+    graphStorePostgres: {
+      url: readOptionalString("GRAPH_STORE_PG_URL"),
+      table: readString("GRAPH_STORE_PG_TABLE", "orchestrator_graph_store_snapshot"),
+    },
     managerTimeoutMs,
     workerTimeoutMs,
     maxTimeoutMs,

@@ -33,6 +33,20 @@ if not exist "%ROOT%services\orchestrator\.env" (
   )
 )
 
+if exist "%ROOT%services\orchestrator\.env" (
+  findstr /B /C:"GRAPH_STORE_PG_URL=" "%ROOT%services\orchestrator\.env" >nul
+  if errorlevel 1 (
+    >>"%ROOT%services\orchestrator\.env" echo GRAPH_STORE_PG_URL=postgresql://whiteops:whiteops@127.0.0.1:5432/whiteops
+    echo [WhiteOps] Added GRAPH_STORE_PG_URL to services\orchestrator\.env
+  )
+
+  findstr /B /C:"GRAPH_STORE_PG_TABLE=" "%ROOT%services\orchestrator\.env" >nul
+  if errorlevel 1 (
+    >>"%ROOT%services\orchestrator\.env" echo GRAPH_STORE_PG_TABLE=orchestrator_graph_store_snapshot
+    echo [WhiteOps] Added GRAPH_STORE_PG_TABLE to services\orchestrator\.env
+  )
+)
+
 if not exist "%ROOT%services\cli-bridge\.env" (
   if exist "%ROOT%services\cli-bridge\.env.example" (
     copy "%ROOT%services\cli-bridge\.env.example" "%ROOT%services\cli-bridge\.env" >nul
@@ -69,10 +83,16 @@ if not exist "%ROOT%services\orchestrator\node_modules" (
 set "BRIDGE_HEALTH_URL=http://127.0.0.1:7071/health"
 set "ORCH_HEALTH_URL=http://127.0.0.1:7081/health"
 set "MAX_HEALTH_RETRIES=30"
+set "DOCKER_COMPOSE_FILE=%ROOT%docker-compose.yml"
+set "POSTGRES_CONTAINER=whiteops-postgres"
+set "POSTGRES_VOLUME=whiteops_postgres_data"
 
 if "%CLEAN_MODE%"=="1" (
   call :clean_existing
 )
+
+call :reset_postgres_docker
+call :start_postgres
 
 call :check_health "%BRIDGE_HEALTH_URL%"
 if "%HEALTH_OK%"=="1" (
@@ -120,6 +140,52 @@ echo.
 pause
 exit /b 0
 
+:reset_postgres_docker
+if not exist "%DOCKER_COMPOSE_FILE%" (
+  echo [WhiteOps] docker-compose.yml not found. Skip docker reset.
+  exit /b 0
+)
+
+where docker >nul 2>nul
+if errorlevel 1 (
+  echo [WhiteOps] WARNING: docker not found. Skip docker reset.
+  exit /b 0
+)
+
+echo [WhiteOps] Resetting old docker state (container + volume)...
+docker compose -f "%DOCKER_COMPOSE_FILE%" down --remove-orphans --volumes >nul 2>nul
+if errorlevel 1 (
+  docker rm -f "%POSTGRES_CONTAINER%" >nul 2>nul
+  docker volume rm "%POSTGRES_VOLUME%" >nul 2>nul
+)
+exit /b 0
+
+:start_postgres
+if not exist "%DOCKER_COMPOSE_FILE%" (
+  echo [WhiteOps] docker-compose.yml not found. Skip postgres startup.
+  exit /b 0
+)
+
+where docker >nul 2>nul
+if errorlevel 1 (
+  echo [WhiteOps] WARNING: docker not found. Skip postgres startup.
+  exit /b 0
+)
+
+docker compose -f "%DOCKER_COMPOSE_FILE%" up -d postgres >nul 2>nul
+if errorlevel 1 (
+  echo [WhiteOps] WARNING: failed to start postgres container via docker compose.
+  exit /b 0
+)
+
+call :wait_postgres_health "%POSTGRES_CONTAINER%" %MAX_HEALTH_RETRIES%
+if "%PG_OK%"=="1" (
+  echo [WhiteOps] postgres is healthy in docker.
+) else (
+  echo [WhiteOps] WARNING: postgres did not become healthy in time.
+)
+exit /b 0
+
 :clean_existing
 echo [WhiteOps] Clean mode enabled. Stopping previous WhiteOps processes...
 taskkill /FI "WINDOWTITLE eq WhiteOps cli-bridge" /T /F >nul 2>nul
@@ -138,6 +204,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 timeout /t 1 /nobreak >nul
 exit /b 0
+
+:wait_postgres_health
+set "PG_OK=0"
+set "PG_STATE="
+set /a "_retries=%~2"
+if "%_retries%"=="" set /a "_retries=20"
+:wait_pg_loop
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "try { $s = docker inspect --format '{{.State.Health.Status}}' '%~1' 2>$null; if ($s -eq 'healthy') { exit 0 } else { exit 1 } } catch { exit 1 }"
+if not errorlevel 1 (
+  set "PG_OK=1"
+  exit /b 0
+)
+set /a "_retries=%_retries%-1"
+if %_retries% LEQ 0 exit /b 0
+timeout /t 1 /nobreak >nul
+goto :wait_pg_loop
 
 :check_health
 set "HEALTH_OK=0"

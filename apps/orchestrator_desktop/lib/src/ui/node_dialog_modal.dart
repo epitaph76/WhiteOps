@@ -21,16 +21,21 @@ class NodeDialogModal extends StatefulWidget {
 
 class _NodeDialogModalState extends State<NodeDialogModal> {
   final TextEditingController _messageController = TextEditingController();
+  final TextEditingController _cwdController = TextEditingController();
+  final FocusNode _cwdFocusNode = FocusNode();
 
   @override
   void initState() {
     super.initState();
+    _cwdController.text = widget.node.config.cwd ?? '';
     unawaited(widget.controller.loadNodeDialogData(widget.node.id));
   }
 
   @override
   void dispose() {
     _messageController.dispose();
+    _cwdController.dispose();
+    _cwdFocusNode.dispose();
     super.dispose();
   }
 
@@ -42,6 +47,8 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
         final liveNode = widget.controller.nodes
             .where((item) => item.id == widget.node.id)
             .firstOrNull;
+        final effectiveNode = liveNode ?? widget.node;
+        _syncCwdField(effectiveNode);
         final fullAccess = liveNode?.config.fullAccess ?? widget.node.config.fullAccess;
         final messages =
             widget.controller.nodeMessages[widget.node.id] ??
@@ -50,6 +57,8 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
             widget.controller.nodeLogs[widget.node.id] ??
             const <NodeLogEntryModel>[];
         final nodeState = widget.controller.activeRun?.nodeStates[widget.node.id];
+        final isManagerNode =
+            effectiveNode.type == 'manager' || effectiveNode.config.role == 'manager';
 
         return Padding(
           padding: const EdgeInsets.all(14),
@@ -107,6 +116,56 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
                         );
                       },
                     ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF2F7FC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFD7E3F1)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _cwdController,
+                            focusNode: _cwdFocusNode,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              labelText: 'Рабочая папка узла (cwd)',
+                              hintText: r'C:\project\WhiteOps\Test_work',
+                              isDense: true,
+                            ),
+                            onSubmitted: (_) => _applyNodeCwd(),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.tonalIcon(
+                          onPressed: _applyNodeCwd,
+                          icon: const Icon(Icons.save),
+                          label: const Text('Сохранить cwd'),
+                        ),
+                      ],
+                    ),
+                    if (isManagerNode) ...[
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Если у менеджера изменить cwd, он автоматически подставится '
+                        'в связанные подчиненные ноды (manager_to_worker). '
+                        'У подчиненных путь можно менять вручную.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF4D6077),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -333,6 +392,25 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
           Expanded(child: child),
         ],
       ),
+    );
+  }
+
+  void _syncCwdField(GraphNodeModel node) {
+    if (_cwdFocusNode.hasFocus) {
+      return;
+    }
+    final nextValue = node.config.cwd ?? '';
+    if (_cwdController.text != nextValue) {
+      _cwdController.text = nextValue;
+    }
+  }
+
+  void _applyNodeCwd() {
+    final value = _cwdController.text.trim();
+    widget.controller.updateNode(
+      widget.node.id,
+      cwd: value.isEmpty ? null : value,
+      clearCwd: value.isEmpty,
     );
   }
 

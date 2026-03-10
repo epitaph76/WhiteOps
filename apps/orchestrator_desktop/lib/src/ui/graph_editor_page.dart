@@ -509,7 +509,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
             controller: _projectFilesPathController,
             decoration: const InputDecoration(
               border: OutlineInputBorder(),
-              labelText: 'Папка проекта (куда сохранять файлы)',
+              labelText: 'Глобальная папка по умолчанию (optional)',
               hintText: r'C:\project\WhiteOps\Test_work',
               isDense: true,
             ),

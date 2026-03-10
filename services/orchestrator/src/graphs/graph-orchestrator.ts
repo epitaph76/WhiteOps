@@ -32,6 +32,10 @@ function truncateText(source: string, max: number): string {
   return `${source.slice(0, max)}\n...[truncated ${source.length - max} chars]`;
 }
 
+function buildAttemptKey(runId: string, nodeId: string, attempt: number): string {
+  return `${runId}:${nodeId}:attempt:${attempt}`;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -344,13 +348,24 @@ export class GraphOrchestrator {
     return this.runningRuns.size;
   }
 
+  resumeRecoverableRuns(limit = 100): string[] {
+    const runIds = this.store.listRecoverableRunIds(limit);
+    for (const runId of runIds) {
+      this.startRunInBackground(runId);
+    }
+    return runIds;
+  }
+
   private async executeRun(runId: string): Promise<void> {
     if (this.runningRuns.has(runId)) {
       return;
     }
 
-    const initial = this.store.getRunForExecution(runId);
+    const initial = this.store.recoverRunForExecution(runId);
     if (!initial) {
+      return;
+    }
+    if (initial.status !== "queued" && initial.status !== "running") {
       return;
     }
 
@@ -570,20 +585,124 @@ export class GraphOrchestrator {
     const timeoutMs = Math.max(1, Math.min(timeoutMsRaw, this.options.maxNodeTimeoutMs));
     const maxRetries = Math.max(0, node.config.maxRetries ?? 0);
     const retryDelayMs = Math.max(1, node.config.retryDelayMs ?? 1_000);
+    const runSnapshot = this.store.getRunForExecution(runId);
+    const runDefaultCwd = runSnapshot?.cwd?.trim() || undefined;
 
     for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+      const attemptKey = buildAttemptKey(runId, node.id, attempt);
       if (this.store.isRunCancelRequested(runId)) {
         this.store.setNodeStatus(runId, node.id, "canceled", {
           attempts: attempt - 1,
+          lastAttemptKey: attemptKey,
           lastError: "Run canceled before node start",
         });
         return;
       }
 
       const prompt = this.buildPrompt(runId, node, dependencyIds);
+      const attemptClaim = this.store.claimNodeAttempt(runId, node.id, attempt, attemptKey);
+      if (!attemptClaim.isNewClaim) {
+        const reused = attemptClaim.record;
+        if (reused.status === "claimed") {
+          this.store.appendNodeLog(
+            runId,
+            node.id,
+            "system",
+            `Attempt ${attemptKey} is already in-flight; skipping duplicate scheduler invocation`,
+          );
+          return;
+        }
+
+        if (reused.status === "completed" && reused.result && reused.artifacts) {
+          this.store.appendNodeLog(
+            runId,
+            node.id,
+            "system",
+            `Idempotency hit for ${attemptKey}: reusing cached result`,
+          );
+          this.store.setNodeResult(runId, node.id, reused.result, reused.artifacts);
+
+          if (isManagerNode(node)) {
+            const currentRun = this.store.getRunForExecution(runId);
+            const hasManagerTrace = Boolean(
+              currentRun?.managerTrace.some((item) => item.managerNodeId === node.id),
+            );
+            if (!hasManagerTrace) {
+              this.createManagerTraceEntries(runId, node, reused.result);
+            }
+          } else {
+            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "completed");
+          }
+
+          return;
+        }
+
+        if (reused.status === "failed") {
+          const message = reused.error || "Cached attempt failed";
+          this.store.appendNodeLog(
+            runId,
+            node.id,
+            "system",
+            `Idempotency hit for ${attemptKey}: cached failure '${message}'`,
+          );
+
+          if (attempt <= maxRetries && !this.store.isRunCancelRequested(runId)) {
+            this.store.setNodeStatus(runId, node.id, "retrying", {
+              attempts: attempt,
+              lastAttemptKey: attemptKey,
+              lastPrompt: prompt,
+              lastError: message,
+            });
+            await sleep(retryDelayMs);
+            continue;
+          }
+
+          this.store.setNodeStatus(
+            runId,
+            node.id,
+            this.store.isRunCancelRequested(runId) ? "canceled" : "failed",
+            {
+              attempts: attempt,
+              lastAttemptKey: attemptKey,
+              lastPrompt: prompt,
+              lastError: message,
+            },
+          );
+          if (!isManagerNode(node)) {
+            this.notifyManagersAboutSubordinateCompletion(
+              runId,
+              node.id,
+              this.store.isRunCancelRequested(runId) ? "canceled" : "failed",
+            );
+          }
+          return;
+        }
+
+        if (reused.status === "canceled") {
+          const message = reused.error || "Cached attempt canceled";
+          this.store.appendNodeLog(
+            runId,
+            node.id,
+            "system",
+            `Idempotency hit for ${attemptKey}: cached cancellation`,
+          );
+          this.store.setNodeStatus(runId, node.id, "canceled", {
+            attempts: attempt,
+            lastAttemptKey: attemptKey,
+            lastPrompt: prompt,
+            lastError: message,
+          });
+          if (!isManagerNode(node)) {
+            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "canceled");
+          }
+          return;
+        }
+      }
+
       const status = attempt === 1 ? "running" : "retrying";
       this.store.setNodeStatus(runId, node.id, status, {
         attempts: attempt,
+        lastAttemptKey: attemptKey,
         lastPrompt: prompt,
       });
 
@@ -596,14 +715,16 @@ export class GraphOrchestrator {
 
       try {
         const result = await this.runner.run(node.config.agentId, prompt, {
-          cwd: node.config.cwd ?? this.options.defaultCwd,
+          cwd: node.config.cwd ?? runDefaultCwd ?? this.options.defaultCwd,
           timeoutMs,
           fullAccess: node.config.fullAccess === true,
         });
 
         if (this.store.isRunCancelRequested(runId)) {
+          this.store.cancelNodeAttempt(attemptKey, "Run canceled during node execution");
           this.store.setNodeStatus(runId, node.id, "canceled", {
             attempts: attempt,
+            lastAttemptKey: attemptKey,
             lastError: "Run canceled during node execution",
           });
           return;
@@ -614,10 +735,13 @@ export class GraphOrchestrator {
         if (result.timedOut) {
           const timeoutError = `Node timed out after ${timeoutMs}ms`;
           this.store.appendNodeLog(runId, node.id, "stderr", timeoutError);
+          this.store.failNodeAttempt(attemptKey, timeoutError);
 
           if (attempt <= maxRetries) {
             this.store.setNodeStatus(runId, node.id, "retrying", {
               attempts: attempt,
+              lastAttemptKey: attemptKey,
+              lastPrompt: prompt,
               lastError: timeoutError,
             });
             await sleep(retryDelayMs);
@@ -626,6 +750,8 @@ export class GraphOrchestrator {
 
           this.store.setNodeStatus(runId, node.id, "failed", {
             attempts: attempt,
+            lastAttemptKey: attemptKey,
+            lastPrompt: prompt,
             lastError: timeoutError,
           });
           if (!isManagerNode(node)) {
@@ -635,6 +761,7 @@ export class GraphOrchestrator {
         }
 
         const artifacts = extractArtifactsFromOutput(result.output);
+        this.store.completeNodeAttempt(attemptKey, result, artifacts);
         this.store.setNodeResult(runId, node.id, result, artifacts);
 
         if (isManagerNode(node)) {
@@ -647,10 +774,17 @@ export class GraphOrchestrator {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Node execution failed";
         this.store.appendNodeLog(runId, node.id, "stderr", message);
+        if (this.store.isRunCancelRequested(runId)) {
+          this.store.cancelNodeAttempt(attemptKey, message);
+        } else {
+          this.store.failNodeAttempt(attemptKey, message);
+        }
 
         if (attempt <= maxRetries && !this.store.isRunCancelRequested(runId)) {
           this.store.setNodeStatus(runId, node.id, "retrying", {
             attempts: attempt,
+            lastAttemptKey: attemptKey,
+            lastPrompt: prompt,
             lastError: message,
           });
           await sleep(retryDelayMs);
@@ -663,6 +797,8 @@ export class GraphOrchestrator {
           this.store.isRunCancelRequested(runId) ? "canceled" : "failed",
           {
             attempts: attempt,
+            lastAttemptKey: attemptKey,
+            lastPrompt: prompt,
             lastError: message,
           },
         );
@@ -696,10 +832,14 @@ export class GraphOrchestrator {
           return `Dependency ${header}: no output`;
         }
 
-        return [
-          `Dependency ${header}:`,
-          `summary: ${extractShortSummary(state.result.output)}`,
-        ].join("\n");
+        const summary = state.summary?.trim() || extractShortSummary(state.result.output);
+        const resultFiles = state.artifacts?.resultFiles ?? [];
+        const linksLine =
+          resultFiles.length > 0
+            ? `resultFiles: ${resultFiles.slice(0, 6).join(", ")}`
+            : "resultFiles: none";
+
+        return [`Dependency ${header}:`, `summary: ${summary}`, linksLine].join("\n");
       })
       .join("\n\n");
 
@@ -935,9 +1075,11 @@ export class GraphOrchestrator {
     }
 
     const state = run.nodeStates[workerNodeId];
-    const summary = state?.result?.output
-      ? extractShortSummary(state.result.output)
-      : state?.lastError?.trim() || "No summary available.";
+    const summary = state?.summary?.trim()
+      || (state?.result?.output ? extractShortSummary(state.result.output) : undefined)
+      || state?.lastError?.trim()
+      || "No summary available.";
+    const resultFiles = state?.artifacts?.resultFiles ?? [];
 
     const managerTargets = run.edges
       .filter(
@@ -962,6 +1104,7 @@ export class GraphOrchestrator {
           `Subordinate update: ${worker.label} (${worker.id})`,
           `status: ${status}`,
           `summary: ${summary}`,
+          `resultFiles: ${resultFiles.length > 0 ? resultFiles.slice(0, 6).join(", ") : "none"}`,
         ].join("\n"),
         runId,
       );
@@ -993,11 +1136,13 @@ export class GraphOrchestrator {
 
         const state = run.nodeStates[worker.id];
         const status = state?.status ?? "unknown";
-        const summary = state?.result?.output
-          ? extractShortSummary(state.result.output, 220)
-          : state?.lastError?.trim() || "No summary available.";
+        const summary = state?.summary?.trim()
+          || (state?.result?.output ? extractShortSummary(state.result.output, 220) : undefined)
+          || state?.lastError?.trim()
+          || "No summary available.";
+        const resultFiles = state?.artifacts?.resultFiles ?? [];
 
-        return `- ${worker.label} (${worker.id}) | status=${status} | summary=${summary}`;
+        return `- ${worker.label} (${worker.id}) | status=${status} | summary=${summary} | resultFiles=${resultFiles.length > 0 ? resultFiles.slice(0, 4).join(",") : "none"}`;
       });
 
       this.store.addNodeMessage(

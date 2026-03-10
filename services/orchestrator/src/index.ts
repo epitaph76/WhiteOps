@@ -8,8 +8,9 @@ import { BridgeSupervisor } from "./bridge/bridge-supervisor";
 import { loadConfig } from "./config";
 import { HttpError } from "./errors";
 import { GraphOrchestrator } from "./graphs/graph-orchestrator";
-import { GraphStore } from "./graphs/graph-store";
-import { GraphNode, GraphUpsertInput, NodeChatMessage } from "./graphs/graph-types";
+import { GraphStore, PersistedGraphStoreSnapshot } from "./graphs/graph-store";
+import { PgSnapshotStore } from "./graphs/pg-snapshot-store";
+import { GraphNode, GraphRun, GraphUpsertInput, NodeChatMessage } from "./graphs/graph-types";
 import {
   OrchestrationCanceledError,
   runMinimalOrchestration,
@@ -285,16 +286,73 @@ async function bootstrap(): Promise<void> {
     });
   }
 
+  let pgSnapshotStore: PgSnapshotStore | undefined;
+  let pgPersistPending: PersistedGraphStoreSnapshot | undefined;
+  let pgPersistInFlight = false;
+
+  const flushPgSnapshot = async (): Promise<void> => {
+    if (!pgSnapshotStore || pgPersistInFlight || !pgPersistPending) {
+      return;
+    }
+
+    pgPersistInFlight = true;
+    try {
+      while (pgPersistPending && pgSnapshotStore) {
+        const snapshot = pgPersistPending;
+        pgPersistPending = undefined;
+        await pgSnapshotStore.save(snapshot);
+      }
+    } catch (error) {
+      console.error("Failed to persist graph snapshot to postgres", error);
+    } finally {
+      pgPersistInFlight = false;
+      if (pgPersistPending && pgSnapshotStore) {
+        void flushPgSnapshot();
+      }
+    }
+  };
+
+  const queuePgSnapshotPersist = (snapshot: PersistedGraphStoreSnapshot): void => {
+    if (!pgSnapshotStore) {
+      return;
+    }
+
+    pgPersistPending = snapshot;
+    void flushPgSnapshot();
+  };
+
+  let initialGraphSnapshot: PersistedGraphStoreSnapshot | undefined;
+  if (config.graphStorePostgres.url) {
+    try {
+      pgSnapshotStore = new PgSnapshotStore(
+        config.graphStorePostgres.url,
+        config.graphStorePostgres.table,
+      );
+      await pgSnapshotStore.initialize();
+      initialGraphSnapshot = await pgSnapshotStore.load();
+    } catch (error) {
+      console.error(
+        "Postgres graph snapshot store is unavailable, fallback to file persistence only",
+        error,
+      );
+      pgSnapshotStore = undefined;
+    }
+  }
+
   const app = Fastify({
     logger: true,
   });
   const taskStore = new TaskStore();
-  const graphStore = new GraphStore();
+  const graphStore = new GraphStore({
+    persistenceFilePath: config.graphStorePath,
+    initialSnapshot: initialGraphSnapshot,
+    onPersistSnapshot: queuePgSnapshotPersist,
+  });
   const graphOrchestrator = new GraphOrchestrator(runner, graphStore, {
     defaultNodeTimeoutMs: config.workerTimeoutMs,
     maxNodeTimeoutMs: config.maxTimeoutMs,
     defaultCwd: config.defaultCwd,
-    maxParallelNodes: 8,
+    maxParallelNodes: config.graphMaxParallelNodes,
   });
   const runningTaskIds = new Set<string>();
 
@@ -369,6 +427,38 @@ async function bootstrap(): Promise<void> {
     }
   };
 
+  const resumeGraphRunsInBackground = async (): Promise<void> => {
+    const recoverableRunIds = graphStore.listRecoverableRunIds(500);
+    if (recoverableRunIds.length === 0) {
+      return;
+    }
+
+    try {
+      await ensureBridgeReady();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Bridge startup failed";
+      app.log.warn(
+        {
+          recoverableRuns: recoverableRunIds.length,
+          error: message,
+        },
+        "skip graph run recovery because bridge is unavailable",
+      );
+      setTimeout(() => {
+        void resumeGraphRunsInBackground();
+      }, 5_000);
+      return;
+    }
+
+    const resumed = graphOrchestrator.resumeRecoverableRuns(500);
+    app.log.info(
+      {
+        resumedRuns: resumed.length,
+      },
+      "graph run recovery completed",
+    );
+  };
+
   app.get("/health", async () => {
     const bridgeStatus = bridgeSupervisor ? await bridgeSupervisor.status() : undefined;
     return {
@@ -377,8 +467,11 @@ async function bootstrap(): Promise<void> {
       mode: config.mode,
       authEnabled: config.auth.enabled,
       bridge: bridgeStatus,
+      graphStoreBackend: pgSnapshotStore ? "postgres+file" : "file",
+      graphStorePostgresEnabled: Boolean(config.graphStorePostgres.url),
       runningTasks: runningTaskIds.size,
       runningGraphRuns: graphOrchestrator.getRunningRunsCount(),
+      recoverableGraphRuns: graphStore.listRecoverableRunIds(10_000).length,
       graphs: graphStore.getGraphsCount(),
       graphRuns: graphStore.getRunsCount(),
       time: new Date().toISOString(),
@@ -586,6 +679,7 @@ async function bootstrap(): Promise<void> {
       body.kickoffManagerNodeId,
       "kickoffManagerNodeId",
     );
+    const runCwd = asOptionalString(body.cwd, "cwd") ?? config.defaultCwd;
 
     await ensureBridgeReady();
 
@@ -627,6 +721,7 @@ async function bootstrap(): Promise<void> {
       graphRevision,
       kickoffMessage,
       kickoffManagerNodeId,
+      cwd: runCwd,
     });
 
     if (kickoffMessage && kickoffManagerNodeId) {
@@ -702,10 +797,36 @@ async function bootstrap(): Promise<void> {
     return reply.status(202).send(run);
   });
 
+  app.get("/graph-runs/:runId/events/history", async (request) => {
+    const actor = resolveActor(request);
+    const params = asObject(request.params, "params");
+    const query = asOptionalObject(request.query, "query") ?? {};
+    const runId = asString(params.runId, "runId");
+    const afterSequence = asOptionalNonNegativeInteger(query.afterSequence, "afterSequence");
+    const limit = asOptionalInteger(query.limit, "limit");
+
+    const run = graphStore.getRun(runId, actor);
+    if (!run) {
+      throw new HttpError(404, `Run ${runId} was not found`);
+    }
+
+    return {
+      runId: run.runId,
+      status: run.status,
+      cancelRequested: run.cancelRequested,
+      items: graphStore.listRunEvents(runId, actor, {
+        afterSequence,
+        limit,
+      }),
+    };
+  });
+
   app.get("/graph-runs/:runId/events", async (request, reply) => {
     const actor = resolveActor(request);
     const params = asObject(request.params, "params");
+    const query = asOptionalObject(request.query, "query") ?? {};
     const runId = asString(params.runId, "runId");
+    const afterSequence = asOptionalNonNegativeInteger(query.afterSequence, "afterSequence");
     const run = graphStore.getRun(runId, actor);
     if (!run) {
       throw new HttpError(404, `Run ${runId} was not found`);
@@ -724,6 +845,20 @@ async function bootstrap(): Promise<void> {
     };
 
     send("snapshot", run);
+    if (afterSequence != null) {
+      const replay = graphStore.listRunEvents(runId, actor, {
+        afterSequence,
+        limit: 5_000,
+      });
+      for (const event of replay) {
+        send("run_event", {
+          runId: run.runId,
+          status: run.status,
+          cancelRequested: run.cancelRequested,
+          event,
+        });
+      }
+    }
     const unsubscribe = graphStore.subscribeRun(runId, (event) => {
       send("run_event", event);
     });
@@ -756,6 +891,7 @@ async function bootstrap(): Promise<void> {
     const cwd = asOptionalString(body.cwd, "cwd");
 
     const resolvedNode = graphStore.resolveNode(nodeId, actor, graphId);
+    let runSnapshot: GraphRun | undefined;
     if (runId) {
       const run = graphStore.getRun(runId, actor);
       if (!run) {
@@ -769,6 +905,8 @@ async function bootstrap(): Promise<void> {
       if (!run.nodeStates[nodeId]) {
         throw new HttpError(400, `Node ${nodeId} is not part of run ${runId}`);
       }
+
+      runSnapshot = run;
     }
 
     const history = graphStore.listNodeMessages(nodeId, actor, resolvedNode.graphId, 20);
@@ -793,7 +931,7 @@ async function bootstrap(): Promise<void> {
       await ensureBridgeReady();
 
       const result = await runner.run(resolvedNode.node.config.agentId, prompt, {
-        cwd: cwd ?? resolvedNode.node.config.cwd ?? config.defaultCwd,
+        cwd: cwd ?? resolvedNode.node.config.cwd ?? runSnapshot?.cwd ?? config.defaultCwd,
         timeoutMs,
         fullAccess: resolvedNode.node.config.fullAccess === true,
       });
@@ -873,12 +1011,14 @@ async function bootstrap(): Promise<void> {
     const graphId = asOptionalString(query.graphId, "graphId");
     const runId = asOptionalString(query.runId, "runId");
     const limit = asOptionalInteger(query.limit, "limit");
+    const afterSequence = asOptionalNonNegativeInteger(query.afterSequence, "afterSequence");
 
     return {
       items: graphStore.listNodeLogs(nodeId, actor, {
         graphId,
         runId,
         limit,
+        afterSequence,
       }),
     };
   });
@@ -897,6 +1037,20 @@ async function bootstrap(): Promise<void> {
   });
 
   const shutdown = async (): Promise<void> => {
+    if (pgSnapshotStore) {
+      try {
+        await pgSnapshotStore.save(graphStore.exportSnapshot());
+      } catch (error) {
+        app.log.error(
+          {
+            error,
+          },
+          "failed to flush graph snapshot to postgres during shutdown",
+        );
+      }
+      await pgSnapshotStore.close();
+    }
+
     bridgeSupervisor?.stop();
     await app.close();
   };
@@ -921,9 +1075,19 @@ async function bootstrap(): Promise<void> {
       bridgeUrl: config.bridge.url,
       bridgeAutostart: config.bridge.autostart,
       authEnabled: config.auth.enabled,
+      graphStorePath: config.graphStorePath,
+      graphMaxParallelNodes: config.graphMaxParallelNodes,
+      graphStorePostgres: {
+        enabled: Boolean(config.graphStorePostgres.url),
+        table: config.graphStorePostgres.table,
+      },
     },
     "orchestrator started",
   );
+
+  setImmediate(() => {
+    void resumeGraphRunsInBackground();
+  });
 }
 
 bootstrap().catch((error: unknown) => {

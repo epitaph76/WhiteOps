@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { AuthActor } from "../auth/auth";
 import { HttpError } from "../errors";
@@ -15,6 +17,7 @@ import {
   GraphUpsertInput,
   ManagerTraceEntry,
   NodeArtifacts,
+  NodeAttemptRecord,
   NodeChatMessage,
   NodeLogEntry,
   NodeLogStream,
@@ -27,6 +30,7 @@ import { validateGraph } from "./graph-validator";
 const MAX_RUN_EVENTS = 1_500;
 const MAX_NODE_MESSAGES = 500;
 const MAX_NODE_LOGS = 2_000;
+const SNAPSHOT_VERSION = 2;
 
 interface GraphRecord {
   id: string;
@@ -59,10 +63,56 @@ interface NormalizedGraphUpsertInput {
   };
 }
 
+interface PersistedGraphRecord {
+  id: string;
+  name: string;
+  description?: string;
+  ownerId: string;
+  acl: {
+    editors: string[];
+    viewers: string[];
+  };
+  createdAt: string;
+  updatedAt: string;
+  latestRevision: number;
+  revisions: Array<{
+    revision: number;
+    createdAt: string;
+    createdBy: string;
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+  }>;
+}
+
+export interface PersistedGraphStoreSnapshot {
+  version: number;
+  savedAt: string;
+  graphs: PersistedGraphRecord[];
+  runs: GraphRunRecord[];
+  nodeMessages: Array<{ key: string; items: NodeChatMessage[] }>;
+  nodeLogs: Array<{ key: string; items: NodeLogEntry[] }>;
+  nodeAttempts: NodeAttemptRecord[];
+}
+
+interface NodeAttemptClaim {
+  record: NodeAttemptRecord;
+  isNewClaim: boolean;
+}
+
+export interface GraphStoreOptions {
+  persistenceFilePath?: string;
+  maxRunEvents?: number;
+  maxNodeMessages?: number;
+  maxNodeLogs?: number;
+  initialSnapshot?: PersistedGraphStoreSnapshot;
+  onPersistSnapshot?: (snapshot: PersistedGraphStoreSnapshot) => void;
+}
+
 export interface CreateRunOptions {
   graphRevision?: number;
   kickoffMessage?: string;
   kickoffManagerNodeId?: string;
+  cwd?: string;
 }
 
 function clone<T>(value: T): T {
@@ -119,12 +169,59 @@ function assertBoolean(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
+function isTerminalNodeStatus(status: GraphRunNodeState["status"]): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "canceled" ||
+    status === "skipped"
+  );
+}
+
+function normalizeChunk(chunk: string): string {
+  return chunk.replace(/\r/g, "").trimEnd();
+}
+
+function ensureNonNegativeInteger(value: unknown, fallback: number): number {
+  if (typeof value !== "number") {
+    return fallback;
+  }
+
+  if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+    return fallback;
+  }
+
+  return value;
+}
+
 export class GraphStore {
   private readonly graphs = new Map<string, GraphRecord>();
   private readonly runs = new Map<string, GraphRunRecord>();
   private readonly nodeMessages = new Map<string, NodeChatMessage[]>();
   private readonly nodeLogs = new Map<string, NodeLogEntry[]>();
+  private readonly nodeAttempts = new Map<string, NodeAttemptRecord>();
   private readonly emitter = new EventEmitter();
+
+  private readonly maxRunEvents: number;
+  private readonly maxNodeMessages: number;
+  private readonly maxNodeLogs: number;
+  private readonly persistenceFilePath?: string;
+  private readonly onPersistSnapshot?: (snapshot: PersistedGraphStoreSnapshot) => void;
+
+  constructor(options: GraphStoreOptions = {}) {
+    this.maxRunEvents = Math.max(50, options.maxRunEvents ?? MAX_RUN_EVENTS);
+    this.maxNodeMessages = Math.max(50, options.maxNodeMessages ?? MAX_NODE_MESSAGES);
+    this.maxNodeLogs = Math.max(100, options.maxNodeLogs ?? MAX_NODE_LOGS);
+    this.persistenceFilePath = options.persistenceFilePath?.trim() || undefined;
+    this.onPersistSnapshot = options.onPersistSnapshot;
+
+    if (options.initialSnapshot) {
+      this.applySnapshot(options.initialSnapshot);
+      return;
+    }
+
+    this.loadFromDisk();
+  }
 
   getGraphsCount(): number {
     return this.graphs.size;
@@ -132,6 +229,61 @@ export class GraphStore {
 
   getRunsCount(): number {
     return this.runs.size;
+  }
+
+  exportSnapshot(): PersistedGraphStoreSnapshot {
+    return this.buildSnapshot();
+  }
+
+  listRecoverableRunIds(limit = 100): string[] {
+    const clampedLimit = Math.max(1, Math.min(limit, 1_000));
+    return [...this.runs.values()]
+      .filter((run) => run.status === "queued" || run.status === "running")
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+      .slice(0, clampedLimit)
+      .map((run) => run.runId);
+  }
+
+  recoverRunForExecution(runId: string): GraphRun | undefined {
+    const run = this.runs.get(runId);
+    if (!run) {
+      return undefined;
+    }
+
+    if (run.status !== "queued" && run.status !== "running") {
+      return this.toRunSnapshot(run);
+    }
+
+    const recoveredNodeIds: string[] = [];
+    for (const state of Object.values(run.nodeStates)) {
+      if (state.status !== "running" && state.status !== "retrying") {
+        continue;
+      }
+
+      state.status = "ready";
+      state.finishedAt = undefined;
+      state.lastError = "Recovered after orchestrator restart";
+      recoveredNodeIds.push(state.nodeId);
+
+      this.pushRunEvent(run, "node_status_changed", {
+        nodeId: state.nodeId,
+        status: state.status,
+        attempts: state.attempts,
+        recovered: true,
+      });
+    }
+
+    if (run.status === "running" || recoveredNodeIds.length > 0) {
+      run.updatedAt = new Date().toISOString();
+      this.pushRunEvent(run, "graph_run_resumed", {
+        recoveredNodeIds,
+        status: run.status,
+        cancelRequested: run.cancelRequested,
+      });
+      this.persistState();
+    }
+
+    return this.toRunSnapshot(run);
   }
 
   listGraphs(actor: AuthActor, limit = 50): OrchestrationGraph[] {
@@ -174,6 +326,7 @@ export class GraphStore {
     };
 
     this.graphs.set(id, record);
+    this.persistState();
     return this.toGraphSnapshot(record, record.latestRevision);
   }
 
@@ -218,6 +371,7 @@ export class GraphStore {
       edges: normalized.edges,
     });
 
+    this.persistState();
     return this.toGraphSnapshot(record, nextRevision);
   }
 
@@ -260,6 +414,7 @@ export class GraphStore {
       runId,
       graphId,
       graphRevision,
+      cwd: options.cwd?.trim() || undefined,
       kickoffMessage: options.kickoffMessage?.trim() || undefined,
       kickoffManagerNodeId: options.kickoffManagerNodeId?.trim() || undefined,
       requestedBy: actor.userId,
@@ -277,6 +432,7 @@ export class GraphStore {
     };
 
     this.runs.set(runId, run);
+    this.persistState();
     return this.toRunSnapshot(run);
   }
 
@@ -293,6 +449,36 @@ export class GraphStore {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, clampedLimit)
       .map((run) => this.toRunSnapshot(run));
+  }
+
+  listRunEvents(
+    runId: string,
+    actor: AuthActor,
+    options: {
+      afterSequence?: number;
+      limit?: number;
+    } = {},
+  ): GraphRunEvent[] {
+    const run = this.runs.get(runId);
+    if (!run) {
+      throw new HttpError(404, `Run ${runId} was not found`);
+    }
+
+    const graph = this.graphs.get(run.graphId);
+    if (!graph) {
+      throw new HttpError(500, `Graph ${run.graphId} for run ${runId} is missing`);
+    }
+
+    this.assertReadable(actor, graph);
+
+    const clampedLimit = Math.max(1, Math.min(options.limit ?? 500, 5_000));
+    const afterSequence = Math.max(0, options.afterSequence ?? 0);
+
+    return run.events
+      .filter((event) => event.sequence > afterSequence)
+      .sort((a, b) => a.sequence - b.sequence)
+      .slice(0, clampedLimit)
+      .map((event) => clone(event));
   }
 
   getRun(runId: string, actor: AuthActor): GraphRun | undefined {
@@ -334,6 +520,7 @@ export class GraphStore {
       this.markRunFinished(runId, "canceled", "Canceled before start");
     }
 
+    this.persistState();
     return this.toRunSnapshot(run);
   }
 
@@ -356,7 +543,9 @@ export class GraphStore {
       requestedBy: run.requestedBy,
       nodes: run.nodes.length,
       edges: run.edges.length,
+      cwd: run.cwd,
     });
+    this.persistState();
   }
 
   markRunFinished(runId: string, status: GraphRunStatus, error?: string): void {
@@ -371,6 +560,7 @@ export class GraphStore {
       error,
       cancelRequested: run.cancelRequested,
     });
+    this.persistState();
   }
 
   setNodeStatus(
@@ -399,9 +589,17 @@ export class GraphStore {
       state.lastPrompt = patch.lastPrompt;
     }
 
+    if (patch.lastAttemptKey !== undefined) {
+      state.lastAttemptKey = patch.lastAttemptKey;
+    }
+
+    if (patch.summary !== undefined) {
+      state.summary = patch.summary;
+    }
+
     if (patch.finishedAt !== undefined) {
       state.finishedAt = patch.finishedAt;
-    } else if (status === "completed" || status === "failed" || status === "canceled" || status === "skipped") {
+    } else if (isTerminalNodeStatus(status)) {
       state.finishedAt = now;
     }
 
@@ -425,11 +623,14 @@ export class GraphStore {
       attempts: state.attempts,
       lastError: state.lastError,
       lastPrompt: state.lastPrompt,
+      lastAttemptKey: state.lastAttemptKey,
+      summary: state.summary,
     });
 
     if (status === "completed" || status === "failed" || status === "canceled") {
       this.updateManagerTraceConfirmationByWorker(runId, nodeId, status);
     }
+    this.persistState();
   }
 
   setNodeResult(runId: string, nodeId: string, result: RunResult, artifacts: NodeArtifacts): void {
@@ -441,6 +642,7 @@ export class GraphStore {
 
     state.result = result;
     state.artifacts = artifacts;
+    state.summary = this.buildNodeSummary(result.output);
     state.status = "completed";
     state.finishedAt = new Date().toISOString();
     run.updatedAt = state.finishedAt;
@@ -449,6 +651,7 @@ export class GraphStore {
       nodeId,
       timedOut: result.timedOut,
       durationMs: result.durationMs,
+      summary: state.summary,
       artifacts: {
         hasDiffPatch: Boolean(artifacts.diffPatch),
         stdout: artifacts.stdout?.length ?? 0,
@@ -461,9 +664,12 @@ export class GraphStore {
       nodeId,
       status: "completed",
       attempts: state.attempts,
+      summary: state.summary,
+      resultFiles: artifacts.resultFiles,
     });
 
     this.updateManagerTraceConfirmationByWorker(runId, nodeId, "completed");
+    this.persistState();
   }
 
   appendNodeLog(runId: string, nodeId: string, stream: NodeLogStream, chunk: string): NodeLogEntry {
@@ -473,7 +679,7 @@ export class GraphStore {
       throw new HttpError(404, `Node ${nodeId} for run ${runId} was not found`);
     }
 
-    const normalizedChunk = chunk.trimEnd();
+    const normalizedChunk = normalizeChunk(chunk);
     const entry: NodeLogEntry = {
       id: randomUUID(),
       graphId: run.graphId,
@@ -488,12 +694,13 @@ export class GraphStore {
     run.nextNodeLogSequence += 1;
     run.updatedAt = entry.createdAt;
 
-    const bucket = this.nodeLogs.get(nodeId) ?? [];
+    const bucketKey = this.getNodeBucketKey(run.graphId, nodeId);
+    const bucket = this.nodeLogs.get(bucketKey) ?? [];
     bucket.push(entry);
-    if (bucket.length > MAX_NODE_LOGS) {
-      bucket.splice(0, bucket.length - MAX_NODE_LOGS);
+    if (bucket.length > this.maxNodeLogs) {
+      bucket.splice(0, bucket.length - this.maxNodeLogs);
     }
-    this.nodeLogs.set(nodeId, bucket);
+    this.nodeLogs.set(bucketKey, bucket);
 
     this.pushRunEvent(run, "node_log_chunk", {
       nodeId,
@@ -502,6 +709,7 @@ export class GraphStore {
       chunk: normalizedChunk,
     });
 
+    this.persistState();
     return clone(entry);
   }
 
@@ -516,8 +724,9 @@ export class GraphStore {
       throw new HttpError(404, `Graph ${graphId} was not found`);
     }
 
-    const normalizedChunk = chunk.trimEnd();
-    const bucket = this.nodeLogs.get(nodeId) ?? [];
+    const normalizedChunk = normalizeChunk(chunk);
+    const bucketKey = this.getNodeBucketKey(graphId, nodeId);
+    const bucket = this.nodeLogs.get(bucketKey) ?? [];
     const sequence = (bucket.at(-1)?.sequence ?? 0) + 1;
 
     const entry: NodeLogEntry = {
@@ -532,12 +741,114 @@ export class GraphStore {
     };
 
     bucket.push(entry);
-    if (bucket.length > MAX_NODE_LOGS) {
-      bucket.splice(0, bucket.length - MAX_NODE_LOGS);
+    if (bucket.length > this.maxNodeLogs) {
+      bucket.splice(0, bucket.length - this.maxNodeLogs);
     }
-    this.nodeLogs.set(nodeId, bucket);
+    this.nodeLogs.set(bucketKey, bucket);
+    this.persistState();
 
     return clone(entry);
+  }
+
+  claimNodeAttempt(
+    runId: string,
+    nodeId: string,
+    attempt: number,
+    attemptKey: string,
+  ): NodeAttemptClaim {
+    const run = this.getRunRequired(runId);
+    const existing = this.nodeAttempts.get(attemptKey);
+    if (existing) {
+      if (existing.runId !== runId || existing.nodeId !== nodeId) {
+        throw new HttpError(
+          409,
+          `Attempt key collision for ${attemptKey}: expected ${runId}/${nodeId}, got ${existing.runId}/${existing.nodeId}`,
+        );
+      }
+
+      if (existing.status === "claimed") {
+        const claimedAt = Date.parse(existing.updatedAt);
+        if (Number.isFinite(claimedAt) && Date.now() - claimedAt < 30_000) {
+          return {
+            record: clone(existing),
+            isNewClaim: false,
+          };
+        }
+
+        existing.updatedAt = new Date().toISOString();
+        this.persistState();
+        return {
+          record: clone(existing),
+          isNewClaim: true,
+        };
+      }
+
+      return {
+        record: clone(existing),
+        isNewClaim: false,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const record: NodeAttemptRecord = {
+      attemptKey,
+      runId,
+      graphId: run.graphId,
+      nodeId,
+      attempt,
+      status: "claimed",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.nodeAttempts.set(attemptKey, record);
+    this.persistState();
+
+    return {
+      record: clone(record),
+      isNewClaim: true,
+    };
+  }
+
+  completeNodeAttempt(attemptKey: string, result: RunResult, artifacts: NodeArtifacts): NodeAttemptRecord {
+    const record = this.getNodeAttemptRequired(attemptKey);
+    record.status = "completed";
+    record.result = result;
+    record.artifacts = artifacts;
+    record.error = undefined;
+    record.updatedAt = new Date().toISOString();
+    this.persistState();
+
+    return clone(record);
+  }
+
+  failNodeAttempt(attemptKey: string, error: string): NodeAttemptRecord {
+    const record = this.getNodeAttemptRequired(attemptKey);
+    record.status = "failed";
+    record.error = error;
+    record.result = undefined;
+    record.artifacts = undefined;
+    record.updatedAt = new Date().toISOString();
+    this.persistState();
+
+    return clone(record);
+  }
+
+  cancelNodeAttempt(attemptKey: string, error?: string): NodeAttemptRecord {
+    const record = this.getNodeAttemptRequired(attemptKey);
+    record.status = "canceled";
+    record.error = error;
+    record.result = undefined;
+    record.artifacts = undefined;
+    record.updatedAt = new Date().toISOString();
+    this.persistState();
+
+    return clone(record);
+  }
+
+  getNodeAttempt(attemptKey: string): NodeAttemptRecord | undefined {
+    const record = this.nodeAttempts.get(attemptKey);
+    return record ? clone(record) : undefined;
   }
 
   addManagerTraceEntry(
@@ -559,6 +870,7 @@ export class GraphStore {
 
     run.managerTrace.push(trace);
     run.updatedAt = trace.assignedAt;
+    this.persistState();
     return clone(trace);
   }
 
@@ -571,6 +883,7 @@ export class GraphStore {
     const run = this.getRunRequired(runId);
     const confirmationStatus = status === "completed" ? "confirmed" : "failed";
     const now = new Date().toISOString();
+    let changed = false;
 
     for (const item of run.managerTrace) {
       if (item.workerNodeId !== workerNodeId || item.confirmationStatus !== "pending") {
@@ -580,9 +893,13 @@ export class GraphStore {
       item.confirmationStatus = confirmationStatus;
       item.confirmedAt = now;
       item.note = note ?? item.note;
+      changed = true;
     }
 
-    run.updatedAt = now;
+    if (changed) {
+      run.updatedAt = now;
+      this.persistState();
+    }
   }
 
   subscribeRun(runId: string, listener: (event: GraphRunStreamEvent) => void): () => void {
@@ -667,24 +984,24 @@ export class GraphStore {
       createdAt: new Date().toISOString(),
     };
 
-    const bucket = this.nodeMessages.get(nodeId) ?? [];
+    const bucketKey = this.getNodeBucketKey(graphId, nodeId);
+    const bucket = this.nodeMessages.get(bucketKey) ?? [];
     bucket.push(message);
-    if (bucket.length > MAX_NODE_MESSAGES) {
-      bucket.splice(0, bucket.length - MAX_NODE_MESSAGES);
+    if (bucket.length > this.maxNodeMessages) {
+      bucket.splice(0, bucket.length - this.maxNodeMessages);
     }
-    this.nodeMessages.set(nodeId, bucket);
+    this.nodeMessages.set(bucketKey, bucket);
+    this.persistState();
 
     return clone(message);
   }
 
   listNodeMessages(nodeId: string, actor: AuthActor, graphId?: string, limit = 100): NodeChatMessage[] {
     const clampedLimit = Math.max(1, Math.min(limit, 500));
-    return (this.nodeMessages.get(nodeId) ?? [])
+    const buckets = this.getNodeBuckets(this.nodeMessages, nodeId, graphId);
+    return buckets
+      .flatMap((items) => items)
       .filter((message) => {
-        if (graphId && message.graphId !== graphId) {
-          return false;
-        }
-
         const graph = this.graphs.get(message.graphId);
         return Boolean(graph && this.canRead(actor, graph));
       })
@@ -700,11 +1017,16 @@ export class GraphStore {
       graphId?: string;
       runId?: string;
       limit?: number;
+      afterSequence?: number;
     } = {},
   ): NodeLogEntry[] {
-    const clampedLimit = Math.max(1, Math.min(options.limit ?? 200, 1_000));
-
-    return (this.nodeLogs.get(nodeId) ?? [])
+    const clampedLimit = Math.max(1, Math.min(options.limit ?? 200, 2_000));
+    const afterSequence = options.afterSequence != null
+      ? Math.max(0, options.afterSequence)
+      : undefined;
+    const buckets = this.getNodeBuckets(this.nodeLogs, nodeId, options.graphId);
+    const entries = buckets
+      .flatMap((items) => items)
       .filter((entry) => {
         if (options.graphId && entry.graphId !== options.graphId) {
           return false;
@@ -714,12 +1036,20 @@ export class GraphStore {
           return false;
         }
 
+        if (afterSequence != null && entry.sequence <= afterSequence) {
+          return false;
+        }
+
         const graph = this.graphs.get(entry.graphId);
         return Boolean(graph && this.canRead(actor, graph));
       })
-      .sort((a, b) => a.sequence - b.sequence)
-      .slice(-clampedLimit)
-      .map((item) => clone(item));
+      .sort((a, b) => a.sequence - b.sequence);
+
+    if (afterSequence != null) {
+      return entries.slice(0, clampedLimit).map((item) => clone(item));
+    }
+
+    return entries.slice(-clampedLimit).map((item) => clone(item));
   }
 
   private normalizeUpsertInput(
@@ -888,8 +1218,8 @@ export class GraphStore {
 
     run.nextEventSequence += 1;
     run.events.push(event);
-    if (run.events.length > MAX_RUN_EVENTS) {
-      run.events.splice(0, run.events.length - MAX_RUN_EVENTS);
+    if (run.events.length > this.maxRunEvents) {
+      run.events.splice(0, run.events.length - this.maxRunEvents);
     }
 
     this.emitter.emit(this.getRunChannel(run.runId), {
@@ -907,6 +1237,224 @@ export class GraphStore {
     }
 
     return run;
+  }
+
+  private getNodeAttemptRequired(attemptKey: string): NodeAttemptRecord {
+    const record = this.nodeAttempts.get(attemptKey);
+    if (!record) {
+      throw new HttpError(404, `Node attempt ${attemptKey} was not found`);
+    }
+
+    return record;
+  }
+
+  private getNodeBucketKey(graphId: string, nodeId: string): string {
+    return `${graphId}::${nodeId}`;
+  }
+
+  private getNodeBuckets<T>(source: Map<string, T[]>, nodeId: string, graphId?: string): T[][] {
+    if (graphId) {
+      return [source.get(this.getNodeBucketKey(graphId, nodeId)) ?? []];
+    }
+
+    const suffix = `::${nodeId}`;
+    const buckets: T[][] = [];
+    for (const [key, items] of source.entries()) {
+      if (key !== nodeId && !key.endsWith(suffix)) {
+        continue;
+      }
+      buckets.push(items);
+    }
+
+    return buckets;
+  }
+
+  private buildNodeSummary(output: string, max = 360): string {
+    const condensed = output
+      .replace(/\r?\n+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+    if (!condensed) {
+      return "No summary available.";
+    }
+
+    if (condensed.length <= max) {
+      return condensed;
+    }
+
+    return `${condensed.slice(0, max)}...[truncated ${condensed.length - max} chars]`;
+  }
+
+  private loadFromDisk(): void {
+    const filePath = this.persistenceFilePath;
+    if (!filePath || !existsSync(filePath)) {
+      return;
+    }
+
+    let parsed: PersistedGraphStoreSnapshot;
+    try {
+      const raw = readFileSync(filePath, "utf8");
+      const payload = JSON.parse(raw) as PersistedGraphStoreSnapshot;
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      parsed = payload;
+    } catch (error) {
+      console.error("Failed to read graph store snapshot", error);
+      return;
+    }
+
+    this.applySnapshot(parsed);
+  }
+
+  private applySnapshot(parsed: PersistedGraphStoreSnapshot): void {
+    if (!Array.isArray(parsed.graphs) || !Array.isArray(parsed.runs)) {
+      return;
+    }
+
+    this.graphs.clear();
+    this.runs.clear();
+    this.nodeMessages.clear();
+    this.nodeLogs.clear();
+    this.nodeAttempts.clear();
+
+    for (const item of parsed.graphs) {
+      const revisions = new Map<number, {
+        createdAt: string;
+        createdBy: string;
+        nodes: GraphNode[];
+        edges: GraphEdge[];
+      }>();
+
+      for (const revision of item.revisions ?? []) {
+        revisions.set(revision.revision, {
+          createdAt: revision.createdAt,
+          createdBy: revision.createdBy,
+          nodes: revision.nodes,
+          edges: revision.edges,
+        });
+      }
+
+      const graphRecord: GraphRecord = {
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        ownerId: item.ownerId,
+        acl: {
+          editors: uniqueStrings(item.acl?.editors ?? []),
+          viewers: uniqueStrings(item.acl?.viewers ?? []),
+        },
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        latestRevision: item.latestRevision,
+        revisions,
+      };
+
+      this.graphs.set(graphRecord.id, graphRecord);
+    }
+
+    for (const rawRun of parsed.runs) {
+      const run = rawRun as GraphRunRecord;
+      run.nodeStates = run.nodeStates ?? {};
+      run.events = Array.isArray(run.events) ? run.events : [];
+      run.managerTrace = Array.isArray(run.managerTrace) ? run.managerTrace : [];
+      run.nextEventSequence = this.resolveNextEventSequence(run);
+      run.nextNodeLogSequence = ensureNonNegativeInteger(run.nextNodeLogSequence, 1);
+      if (run.nextNodeLogSequence <= 0) {
+        run.nextNodeLogSequence = 1;
+      }
+
+      this.runs.set(run.runId, run);
+    }
+
+    for (const bucket of parsed.nodeMessages ?? []) {
+      if (!bucket || typeof bucket.key !== "string" || !Array.isArray(bucket.items)) {
+        continue;
+      }
+      this.nodeMessages.set(bucket.key, bucket.items);
+    }
+
+    for (const bucket of parsed.nodeLogs ?? []) {
+      if (!bucket || typeof bucket.key !== "string" || !Array.isArray(bucket.items)) {
+        continue;
+      }
+      this.nodeLogs.set(bucket.key, bucket.items);
+    }
+
+    for (const record of parsed.nodeAttempts ?? []) {
+      if (!record || typeof record.attemptKey !== "string") {
+        continue;
+      }
+      this.nodeAttempts.set(record.attemptKey, record);
+    }
+
+    this.rebuildRunNodeLogSequences();
+  }
+
+  private buildSnapshot(): PersistedGraphStoreSnapshot {
+    return {
+      version: SNAPSHOT_VERSION,
+      savedAt: new Date().toISOString(),
+      graphs: [...this.graphs.values()].map((graph) => ({
+        id: graph.id,
+        name: graph.name,
+        description: graph.description,
+        ownerId: graph.ownerId,
+        acl: clone(graph.acl),
+        createdAt: graph.createdAt,
+        updatedAt: graph.updatedAt,
+        latestRevision: graph.latestRevision,
+        revisions: [...graph.revisions.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([revision, value]) => ({
+            revision,
+            createdAt: value.createdAt,
+            createdBy: value.createdBy,
+            nodes: clone(value.nodes),
+            edges: clone(value.edges),
+          })),
+      })),
+      runs: [...this.runs.values()].map((run) => clone(run)),
+      nodeMessages: [...this.nodeMessages.entries()].map(([key, items]) => ({
+        key,
+        items: clone(items),
+      })),
+      nodeLogs: [...this.nodeLogs.entries()].map(([key, items]) => ({
+        key,
+        items: clone(items),
+      })),
+      nodeAttempts: [...this.nodeAttempts.values()].map((record) => clone(record)),
+    };
+  }
+
+  private resolveNextEventSequence(run: GraphRunRecord): number {
+    const base = ensureNonNegativeInteger(run.nextEventSequence, 1);
+    const maxObserved = run.events.reduce((max, event) => {
+      const sequence = ensureNonNegativeInteger(event.sequence, 0);
+      return Math.max(max, sequence);
+    }, 0);
+
+    return Math.max(base, maxObserved + 1, 1);
+  }
+
+  private rebuildRunNodeLogSequences(): void {
+    const maxByRun = new Map<string, number>();
+    for (const bucket of this.nodeLogs.values()) {
+      for (const entry of bucket) {
+        if (!entry.runId) {
+          continue;
+        }
+
+        const current = maxByRun.get(entry.runId) ?? 0;
+        maxByRun.set(entry.runId, Math.max(current, entry.sequence));
+      }
+    }
+
+    for (const run of this.runs.values()) {
+      const maxSequence = maxByRun.get(run.runId) ?? 0;
+      run.nextNodeLogSequence = Math.max(run.nextNodeLogSequence, maxSequence + 1, 1);
+    }
   }
 
   private toGraphSnapshot(record: GraphRecord, revisionNumber: number): OrchestrationGraph {
@@ -994,5 +1542,28 @@ export class GraphStore {
 
   private getRunChannel(runId: string): string {
     return `graph-run:${runId}`;
+  }
+
+  private persistState(): void {
+    const snapshot = this.buildSnapshot();
+
+    const filePath = this.persistenceFilePath;
+    if (filePath) {
+      try {
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        writeFileSync(filePath, JSON.stringify(snapshot), "utf8");
+      } catch (error) {
+        console.error("Failed to persist graph store snapshot", error);
+        throw error;
+      }
+    }
+
+    if (this.onPersistSnapshot) {
+      try {
+        this.onPersistSnapshot(snapshot);
+      } catch (error) {
+        console.error("Graph store snapshot callback failed", error);
+      }
+    }
   }
 }

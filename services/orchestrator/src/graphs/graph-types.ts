@@ -105,6 +105,7 @@ export type NodeExecutionStatus =
 
 export type GraphRealtimeEventType =
   | "graph_run_started"
+  | "graph_run_resumed"
   | "node_status_changed"
   | "node_log_chunk"
   | "node_result_ready"
@@ -133,10 +134,12 @@ export interface GraphRunNodeState {
   nodeId: string;
   status: NodeExecutionStatus;
   attempts: number;
+  lastAttemptKey?: string;
   lastPrompt?: string;
   startedAt?: string;
   finishedAt?: string;
   lastError?: string;
+  summary?: string;
   result?: RunResult;
   artifacts?: NodeArtifacts;
 }
@@ -158,6 +161,7 @@ export interface GraphRun {
   runId: string;
   graphId: string;
   graphRevision: number;
+  cwd?: string;
   kickoffMessage?: string;
   kickoffManagerNodeId?: string;
   requestedBy: string;
@@ -173,6 +177,20 @@ export interface GraphRun {
   nodeStates: Record<string, GraphRunNodeState>;
   managerTrace: ManagerTraceEntry[];
   events: GraphRunEvent[];
+}
+
+export interface NodeAttemptRecord {
+  attemptKey: string;
+  runId: string;
+  graphId: string;
+  nodeId: string;
+  attempt: number;
+  status: "claimed" | "completed" | "failed" | "canceled";
+  createdAt: string;
+  updatedAt: string;
+  error?: string;
+  result?: RunResult;
+  artifacts?: NodeArtifacts;
 }
 
 export interface GraphRunStreamEvent {

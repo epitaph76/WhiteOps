@@ -49,11 +49,19 @@ export interface AuthSettings {
   tokens: Record<string, AuthTokenBinding>;
 }
 
+export interface GraphStorePostgresSettings {
+  url?: string;
+  table: string;
+}
+
 export interface OrchestratorConfig {
   host: string;
   port: number;
   mode: ExecutionMode;
   defaultCwd?: string;
+  graphStorePath: string;
+  graphMaxParallelNodes: number;
+  graphStorePostgres: GraphStorePostgresSettings;
   managerTimeoutMs: number;
   workerTimeoutMs: number;
   maxTimeoutMs: number;

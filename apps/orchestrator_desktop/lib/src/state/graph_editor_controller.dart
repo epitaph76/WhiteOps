@@ -353,6 +353,10 @@ class GraphEditorController extends ChangeNotifier {
     notifyListeners();
   }
 
+  String _globalProjectPathOrEmpty() {
+    return projectFilesPath.trim();
+  }
+
   void setSelectedRelationType(String relationType) {
     selectedRelationType = relationType;
     notifyListeners();
@@ -495,7 +499,11 @@ class GraphEditorController extends ChangeNotifier {
     int? retryDelayMs,
     bool clearRetryDelayMs = false,
   }) {
-    nodes = nodes
+    final previousNode = nodes.where((node) => node.id == nodeId).firstOrNull;
+    final previousCwd = previousNode?.config.cwd?.trim();
+    final hasExplicitCwdUpdate = clearCwd || cwd != null;
+
+    var updatedNodes = nodes
         .map((node) {
           if (node.id != nodeId) {
             return node;
@@ -521,6 +529,19 @@ class GraphEditorController extends ChangeNotifier {
         })
         .toList(growable: false);
 
+    if (hasExplicitCwdUpdate) {
+      final updatedNode = updatedNodes.where((node) => node.id == nodeId).firstOrNull;
+      if (updatedNode != null && _isManagerNode(updatedNode)) {
+        updatedNodes = _propagateManagerCwdToSubordinates(
+          sourceNodes: updatedNodes,
+          managerNodeId: nodeId,
+          previousManagerCwd: previousCwd,
+          nextManagerCwd: updatedNode.config.cwd,
+        );
+      }
+    }
+
+    nodes = updatedNodes;
     _bumpLocalRevision();
   }
 
@@ -715,6 +736,8 @@ class GraphEditorController extends ChangeNotifier {
       return false;
     }
 
+    final globalPath = _globalProjectPathOrEmpty();
+
     if (runningGraph) {
       _setError('Run is already starting. Please wait.');
       return false;
@@ -735,6 +758,7 @@ class GraphEditorController extends ChangeNotifier {
         graphRevision: graphRevision,
         kickoffMessage: kickoffMessage,
         kickoffManagerNodeId: kickoffManagerNodeId,
+        cwd: globalPath.isEmpty ? null : globalPath,
       );
       _upsertRun(run);
       activeRun = run;
@@ -811,8 +835,17 @@ class GraphEditorController extends ChangeNotifier {
     runStreamConnected = false;
     notifyListeners();
 
+    final current = activeRun;
+    int? afterSequence;
+    if (current != null && current.runId == runId && current.events.isNotEmpty) {
+      final maxSequence = current.events
+          .map((event) => event.sequence)
+          .reduce((left, right) => left > right ? left : right);
+      afterSequence = maxSequence;
+    }
+
     _runEventsSubscription = _api
-        .streamRunEvents(runId)
+        .streamRunEvents(runId, afterSequence: afterSequence)
         .listen(
           (message) {
             if (_disposed) {
@@ -828,7 +861,28 @@ class GraphEditorController extends ChangeNotifier {
               return;
             }
             runStreamConnected = false;
-            _setError('Ошибка SSE для запуска $runId: $error');
+            _setError('SSE error for run $runId: $error');
+
+            final currentRun = activeRun;
+            if (currentRun == null ||
+                currentRun.runId != runId ||
+                isGraphRunTerminal(currentRun.status)) {
+              return;
+            }
+
+            Future<void>.delayed(const Duration(seconds: 2), () {
+              if (_disposed) {
+                return;
+              }
+              final latest = activeRun;
+              if (latest == null ||
+                  latest.runId != runId ||
+                  isGraphRunTerminal(latest.status)) {
+                return;
+              }
+              unawaited(_refreshActiveRun());
+              unawaited(_subscribeToRun(runId));
+            });
           },
           onDone: () {
             if (_disposed) {
@@ -836,6 +890,27 @@ class GraphEditorController extends ChangeNotifier {
             }
             runStreamConnected = false;
             notifyListeners();
+
+            final currentRun = activeRun;
+            if (currentRun == null ||
+                currentRun.runId != runId ||
+                isGraphRunTerminal(currentRun.status)) {
+              return;
+            }
+
+            Future<void>.delayed(const Duration(seconds: 2), () {
+              if (_disposed) {
+                return;
+              }
+              final latest = activeRun;
+              if (latest == null ||
+                  latest.runId != runId ||
+                  isGraphRunTerminal(latest.status)) {
+                return;
+              }
+              unawaited(_refreshActiveRun());
+              unawaited(_subscribeToRun(runId));
+            });
           },
           cancelOnError: true,
         );
@@ -996,6 +1071,8 @@ class GraphEditorController extends ChangeNotifier {
       return false;
     }
 
+    final globalPath = _globalProjectPathOrEmpty();
+
     sendingNodeMessage = true;
     errorMessage = null;
     notifyListeners();
@@ -1023,17 +1100,18 @@ class GraphEditorController extends ChangeNotifier {
         return false;
       }
 
+      final nodeCwd = node?.config.cwd?.trim();
+      final effectiveCwd = nodeCwd != null && nodeCwd.isNotEmpty
+          ? nodeCwd
+          : (globalPath.isEmpty ? null : globalPath);
+
       final response = await _api.sendNodeMessage(
         nodeId,
         NodeChatRequestModel(
           message: trimmed,
           graphId: activeGraphId,
           runId: activeRun?.runId,
-          cwd: node?.config.cwd?.trim().isNotEmpty == true
-              ? node!.config.cwd
-              : projectFilesPath.trim().isEmpty
-              ? null
-              : projectFilesPath.trim(),
+          cwd: effectiveCwd,
         ),
       );
 
@@ -1311,6 +1389,90 @@ class GraphEditorController extends ChangeNotifier {
       }
     }
     return false;
+  }
+
+  bool _isManagerNode(GraphNodeModel node) {
+    return node.type == 'manager' || node.config.role == 'manager';
+  }
+
+  Set<String> _collectSubordinateNodeIds(String managerNodeId) {
+    final result = <String>{};
+    final queue = <String>[managerNodeId];
+    var index = 0;
+
+    while (index < queue.length) {
+      final current = queue[index];
+      index += 1;
+
+      for (final edge in edges) {
+        if (edge.relationType != 'manager_to_worker') {
+          continue;
+        }
+        if (edge.fromNodeId != current) {
+          continue;
+        }
+
+        final subordinateId = edge.toNodeId;
+        if (subordinateId == managerNodeId || result.contains(subordinateId)) {
+          continue;
+        }
+
+        result.add(subordinateId);
+        queue.add(subordinateId);
+      }
+    }
+
+    return result;
+  }
+
+  List<GraphNodeModel> _propagateManagerCwdToSubordinates({
+    required List<GraphNodeModel> sourceNodes,
+    required String managerNodeId,
+    required String? previousManagerCwd,
+    required String? nextManagerCwd,
+  }) {
+    final previous = previousManagerCwd?.trim() ?? '';
+    final next = nextManagerCwd?.trim() ?? '';
+    if (previous == next) {
+      return sourceNodes;
+    }
+
+    final subordinateIds = _collectSubordinateNodeIds(managerNodeId);
+    if (subordinateIds.isEmpty) {
+      return sourceNodes;
+    }
+
+    final shouldClear = next.isEmpty;
+    var changed = false;
+
+    final updated = sourceNodes
+        .map((node) {
+          if (!subordinateIds.contains(node.id)) {
+            return node;
+          }
+
+          final current = node.config.cwd?.trim() ?? '';
+          final wasInherited = previous.isNotEmpty && current == previous;
+          final isUnset = current.isEmpty;
+          if (!isUnset && !wasInherited) {
+            return node;
+          }
+
+          if (shouldClear && isUnset) {
+            return node;
+          }
+
+          changed = true;
+          return node.copyWith(
+            config: node.config.copyWith(
+              cwd: shouldClear ? null : next,
+              clearCwd: shouldClear,
+            ),
+          );
+        })
+        .toList(growable: false);
+
+    return changed ? updated : sourceNodes;
   }
 
   void _applyProjectPathToNodesWithoutCwd() {

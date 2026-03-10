@@ -35,6 +35,18 @@ Health check:
 Invoke-RestMethod http://127.0.0.1:7081/health
 ```
 
+Optional PostgreSQL snapshot backend (Docker):
+
+```powershell
+cd C:\project\WhiteOps
+docker compose up -d postgres
+```
+
+Use `.env` values:
+
+- `GRAPH_STORE_PG_URL=postgresql://whiteops:whiteops@127.0.0.1:5432/whiteops`
+- `GRAPH_STORE_PG_TABLE=orchestrator_graph_store_snapshot`
+
 ## Frontend-Oriented API
 
 ### Why this API exists
@@ -183,16 +195,18 @@ And return:
 
 ### Graph runs
 
-- `POST /graphs/:id/runs` (creates run bound to a specific graph revision)
+- `POST /graphs/:id/runs` (creates run bound to a specific graph revision; supports optional `cwd`)
 - `GET /graphs/:id/runs`
 - `GET /graphs/:id/runs/:runId`
 - `GET /graph-runs/:runId`
 - `POST /graph-runs/:runId/cancel`
 - `GET /graph-runs/:runId/events` (SSE realtime stream)
+- `GET /graph-runs/:runId/events/history` (replay events since `afterSequence`)
 
 Realtime event types:
 
 - `graph_run_started`
+- `graph_run_resumed`
 - `node_status_changed`
 - `node_log_chunk`
 - `node_result_ready`
@@ -202,7 +216,7 @@ Realtime event types:
 
 - `POST /nodes/:nodeId/chat`
 - `GET /nodes/:nodeId/messages`
-- `GET /nodes/:nodeId/logs`
+- `GET /nodes/:nodeId/logs` (supports `afterSequence` for incremental reads)
 
 The run payload includes manager trace entries (task assignment, reason, confirmation status)
 and node artifacts (`diffPatch`, `stdout`, `stderr`, `resultFiles`).
@@ -231,5 +245,12 @@ Legacy `/tasks/*` endpoints remain open for local dev UX.
 
 ## Storage Model
 
-Current implementation uses in-memory storage for graphs/runs/messages/logs.
-After process restart all runtime data is lost.
+Graph storage is persisted as snapshot JSON containing:
+graphs, runs, run events, node messages, node logs, and node-attempt idempotency records.
+
+Backends:
+
+- File snapshot (`GRAPH_STORE_PATH`) always available.
+- PostgreSQL snapshot mirror (`GRAPH_STORE_PG_URL`) optional; when enabled, snapshot is loaded/saved via Postgres as durable storage.
+
+Queued/running graph runs are recovered and resumed on orchestrator restart.

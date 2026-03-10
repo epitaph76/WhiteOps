@@ -148,6 +148,7 @@ class GraphApiClient {
     int? graphRevision,
     String? kickoffMessage,
     String? kickoffManagerNodeId,
+    String? cwd,
   }) async {
     final payload = <String, dynamic>{};
     if (graphRevision != null) {
@@ -158,6 +159,9 @@ class GraphApiClient {
     }
     if (kickoffManagerNodeId != null && kickoffManagerNodeId.trim().isNotEmpty) {
       payload['kickoffManagerNodeId'] = kickoffManagerNodeId.trim();
+    }
+    if (cwd != null && cwd.trim().isNotEmpty) {
+      payload['cwd'] = cwd.trim();
     }
 
     final response = await _client.post(
@@ -210,6 +214,7 @@ class GraphApiClient {
     String? graphId,
     String? runId,
     int limit = 300,
+    int? afterSequence,
   }) async {
     final query = <String, String>{'limit': '$limit'};
     if (graphId != null && graphId.trim().isNotEmpty) {
@@ -217,6 +222,9 @@ class GraphApiClient {
     }
     if (runId != null && runId.trim().isNotEmpty) {
       query['runId'] = runId.trim();
+    }
+    if (afterSequence != null && afterSequence >= 0) {
+      query['afterSequence'] = '$afterSequence';
     }
 
     final response = await _client.get(_uri('/nodes/$nodeId/logs', query));
@@ -248,8 +256,15 @@ class GraphApiClient {
     return NodeChatResponseModel.fromJson(_decodeObject(response));
   }
 
-  Stream<GraphSseMessage> streamRunEvents(String runId) async* {
-    final request = http.Request('GET', _uri('/graph-runs/$runId/events'));
+  Stream<GraphSseMessage> streamRunEvents(String runId, {int? afterSequence}) async* {
+    final query = <String, String>{};
+    if (afterSequence != null && afterSequence >= 0) {
+      query['afterSequence'] = '$afterSequence';
+    }
+    final request = http.Request(
+      'GET',
+      _uri('/graph-runs/$runId/events', query.isEmpty ? null : query),
+    );
     request.headers['accept'] = 'text/event-stream';
     final response = await _client.send(request);
 
