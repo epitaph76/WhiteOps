@@ -11,6 +11,7 @@ export interface GraphNodePosition {
 export interface GraphNodeConfig {
   agentId: AgentId;
   role: "manager" | "worker";
+  fullAccess?: boolean;
   prompt?: string;
   cwd?: string;
   timeoutMs?: number;
@@ -132,6 +133,7 @@ export interface GraphRunNodeState {
   nodeId: string;
   status: NodeExecutionStatus;
   attempts: number;
+  lastPrompt?: string;
   startedAt?: string;
   finishedAt?: string;
   lastError?: string;

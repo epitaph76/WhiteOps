@@ -22,6 +22,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
   late final TextEditingController _serverController;
   late final TextEditingController _graphNameController;
   late final TextEditingController _graphDescriptionController;
+  late final TextEditingController _projectFilesPathController;
   final FocusNode _shortcutsFocusNode = FocusNode();
 
   @override
@@ -33,6 +34,9 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
     _graphDescriptionController = TextEditingController(
       text: _controller.graphDescription,
     );
+    _projectFilesPathController = TextEditingController(
+      text: _controller.projectFilesPath,
+    );
     unawaited(_controller.initialize());
   }
 
@@ -42,6 +46,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
     _serverController.dispose();
     _graphNameController.dispose();
     _graphDescriptionController.dispose();
+    _projectFilesPathController.dispose();
     _shortcutsFocusNode.dispose();
     super.dispose();
   }
@@ -236,6 +241,13 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
       _serverController.text = _controller.baseUrl;
       _serverController.selection = TextSelection.fromPosition(
         TextPosition(offset: _serverController.text.length),
+      );
+    }
+
+    if (_projectFilesPathController.text != _controller.projectFilesPath) {
+      _projectFilesPathController.text = _controller.projectFilesPath;
+      _projectFilesPathController.selection = TextSelection.fromPosition(
+        TextPosition(offset: _projectFilesPathController.text.length),
       );
     }
   }
@@ -491,6 +503,17 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
               alignLabelWithHint: true,
             ),
             onChanged: _controller.setGraphDescription,
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _projectFilesPathController,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              labelText: 'Папка проекта (куда сохранять файлы)',
+              hintText: r'C:\project\WhiteOps\Test_work',
+              isDense: true,
+            ),
+            onChanged: _controller.setProjectFilesPath,
           ),
           const SizedBox(height: 8),
           Row(

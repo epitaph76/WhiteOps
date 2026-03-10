@@ -39,6 +39,10 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
     return AnimatedBuilder(
       animation: widget.controller,
       builder: (context, _) {
+        final liveNode = widget.controller.nodes
+            .where((item) => item.id == widget.node.id)
+            .firstOrNull;
+        final fullAccess = liveNode?.config.fullAccess ?? widget.node.config.fullAccess;
         final messages =
             widget.controller.nodeMessages[widget.node.id] ??
             const <NodeChatMessageModel>[];
@@ -75,6 +79,36 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
                     icon: const Icon(Icons.close),
                   ),
                 ],
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF2F7FC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFD7E3F1)),
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Полный доступ (danger-full-access) для запуска этого узла',
+                        style: TextStyle(fontSize: 12.5),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Switch(
+                      value: fullAccess,
+                      onChanged: (value) {
+                        widget.controller.updateNode(
+                          widget.node.id,
+                          fullAccess: value,
+                        );
+                      },
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 8),
               Expanded(
@@ -256,6 +290,7 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
                                       'status': nodeState.status,
                                       'attempts': nodeState.attempts,
                                       'lastError': nodeState.lastError,
+                                      'lastPrompt': nodeState.lastPrompt,
                                       'result': nodeState.result,
                                     }),
                                     style: const TextStyle(

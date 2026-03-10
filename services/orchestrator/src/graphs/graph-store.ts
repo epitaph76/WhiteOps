@@ -109,6 +109,16 @@ function assertObject(value: unknown, field: string): Record<string, unknown> | 
   return value as Record<string, unknown>;
 }
 
+function assertBoolean(value: unknown, field: string): boolean | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, `${field} must be a boolean`);
+  }
+  return value;
+}
+
 export class GraphStore {
   private readonly graphs = new Map<string, GraphRecord>();
   private readonly runs = new Map<string, GraphRunRecord>();
@@ -385,6 +395,10 @@ export class GraphStore {
       state.startedAt = now;
     }
 
+    if (patch.lastPrompt !== undefined) {
+      state.lastPrompt = patch.lastPrompt;
+    }
+
     if (patch.finishedAt !== undefined) {
       state.finishedAt = patch.finishedAt;
     } else if (status === "completed" || status === "failed" || status === "canceled" || status === "skipped") {
@@ -410,6 +424,7 @@ export class GraphStore {
       status,
       attempts: state.attempts,
       lastError: state.lastError,
+      lastPrompt: state.lastPrompt,
     });
 
     if (status === "completed" || status === "failed" || status === "canceled") {
@@ -763,6 +778,10 @@ export class GraphStore {
 
       const prompt = node.config?.prompt?.trim();
       const cwd = node.config?.cwd?.trim();
+      const fullAccess = assertBoolean(
+        node.config?.fullAccess,
+        `nodes[${index}].config.fullAccess`,
+      );
       const metadata = assertObject(node.config?.metadata, `nodes[${index}].config.metadata`);
 
       return {
@@ -776,6 +795,7 @@ export class GraphStore {
         config: {
           agentId,
           role,
+          fullAccess: fullAccess ?? false,
           prompt: prompt || undefined,
           cwd: cwd || undefined,
           timeoutMs,

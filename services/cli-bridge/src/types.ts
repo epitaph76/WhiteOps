@@ -35,4 +35,5 @@ export interface RunResult {
 export interface RunOptions {
   timeoutMs?: number;
   idleMs?: number;
+  fullAccess?: boolean;
 }

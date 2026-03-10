@@ -1,5 +1,10 @@
 import { GraphEdge, GraphNode, GraphValidationResult } from "./graph-types";
 
+function isExecutionEdge(edge: GraphEdge): boolean {
+  // Feedback edges are informational and must not participate in execution DAG validation.
+  return edge.relationType !== "feedback";
+}
+
 export function validateGraph(nodes: GraphNode[], edges: GraphEdge[]): GraphValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -52,7 +57,7 @@ export function validateGraph(nodes: GraphNode[], edges: GraphEdge[]): GraphVali
     indegree.set(node.id, 0);
   }
 
-  for (const edge of validEdges) {
+  for (const edge of validEdges.filter(isExecutionEdge)) {
     outgoing.get(edge.fromNodeId)?.push(edge.toNodeId);
     indegree.set(edge.toNodeId, (indegree.get(edge.toNodeId) ?? 0) + 1);
   }

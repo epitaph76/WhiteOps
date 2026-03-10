@@ -56,6 +56,7 @@ export class ApiRunner implements AgentRunner {
           prompt,
           cwd: runOptions.cwd,
           timeoutMs: runOptions.timeoutMs,
+          fullAccess: runOptions.fullAccess === true,
         }),
         signal: controller.signal,
       });

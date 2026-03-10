@@ -43,6 +43,16 @@ function asOptionalNumber(value: unknown, field: string): number | undefined {
   return value;
 }
 
+function asOptionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, `${field} must be a boolean`);
+  }
+  return value;
+}
+
 function asAgentId(value: unknown): AgentId {
   const normalized = asString(value, "agentId");
   if (normalized !== "codex" && normalized !== "qwen") {
@@ -113,6 +123,7 @@ async function bootstrap(): Promise<void> {
       cwd: asOptionalString(body.cwd, "cwd"),
       timeoutMs: asOptionalNumber(body.timeoutMs, "timeoutMs"),
       idleMs: asOptionalNumber(body.idleMs, "idleMs"),
+      fullAccess: asOptionalBoolean(body.fullAccess, "fullAccess"),
     });
 
     return reply.status(201).send(result);

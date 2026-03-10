@@ -639,7 +639,7 @@ class GraphNodeCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${node.type} | ${node.config.agentId} / ${node.config.role}',
+                  '${node.type} | ${node.config.agentId} / ${node.config.role} | ${node.config.fullAccess ? 'full-access' : 'sandbox'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -1051,4 +1051,3 @@ class MiniMapPainter extends CustomPainter {
     return oldDelegate.nodes != nodes || oldDelegate.viewport != viewport;
   }
 }
-

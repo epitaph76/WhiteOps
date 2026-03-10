@@ -81,6 +81,16 @@ function asOptionalNumber(value: unknown, field: string): number | undefined {
   return value;
 }
 
+function asOptionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, `${field} must be a boolean`);
+  }
+  return value;
+}
+
 function asOptionalInteger(value: unknown, field: string): number | undefined {
   if (value == null) {
     return undefined;
@@ -181,6 +191,10 @@ function parseGraphUpsertInput(body: JsonObject): GraphUpsertInput {
               | "manager"
               | "worker"
               | undefined,
+            fullAccess: asOptionalBoolean(
+              config.fullAccess,
+              `nodes[${index}].config.fullAccess`,
+            ),
             prompt: asOptionalString(config.prompt, `nodes[${index}].config.prompt`),
             cwd: asOptionalString(config.cwd, `nodes[${index}].config.cwd`),
             timeoutMs: asOptionalNumber(config.timeoutMs, `nodes[${index}].config.timeoutMs`),
@@ -781,6 +795,7 @@ async function bootstrap(): Promise<void> {
       const result = await runner.run(resolvedNode.node.config.agentId, prompt, {
         cwd: cwd ?? resolvedNode.node.config.cwd ?? config.defaultCwd,
         timeoutMs,
+        fullAccess: resolvedNode.node.config.fullAccess === true,
       });
 
       if (runId) {

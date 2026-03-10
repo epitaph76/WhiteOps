@@ -62,6 +62,7 @@ class GraphNodeConfigModel {
   const GraphNodeConfigModel({
     required this.agentId,
     required this.role,
+    this.fullAccess = false,
     this.prompt,
     this.cwd,
     this.timeoutMs,
@@ -72,6 +73,7 @@ class GraphNodeConfigModel {
 
   final String agentId;
   final String role;
+  final bool fullAccess;
   final String? prompt;
   final String? cwd;
   final int? timeoutMs;
@@ -83,6 +85,7 @@ class GraphNodeConfigModel {
     return GraphNodeConfigModel(
       agentId: _asString(json['agentId'], fallback: 'qwen'),
       role: _asString(json['role'], fallback: 'worker'),
+      fullAccess: _asBool(json['fullAccess']),
       prompt: _asString(json['prompt']).trim().isEmpty
           ? null
           : _asString(json['prompt']).trim(),
@@ -103,6 +106,7 @@ class GraphNodeConfigModel {
   GraphNodeConfigModel copyWith({
     String? agentId,
     String? role,
+    bool? fullAccess,
     String? prompt,
     bool clearPrompt = false,
     String? cwd,
@@ -119,6 +123,7 @@ class GraphNodeConfigModel {
     return GraphNodeConfigModel(
       agentId: agentId ?? this.agentId,
       role: role ?? this.role,
+      fullAccess: fullAccess ?? this.fullAccess,
       prompt: clearPrompt ? null : (prompt ?? this.prompt),
       cwd: clearCwd ? null : (cwd ?? this.cwd),
       timeoutMs: clearTimeoutMs ? null : (timeoutMs ?? this.timeoutMs),
@@ -134,6 +139,7 @@ class GraphNodeConfigModel {
     return {
       'agentId': agentId,
       'role': role,
+      'fullAccess': fullAccess,
       if (prompt != null && prompt!.trim().isNotEmpty) 'prompt': prompt!.trim(),
       if (cwd != null && cwd!.trim().isNotEmpty) 'cwd': cwd!.trim(),
       if (timeoutMs != null) 'timeoutMs': timeoutMs,
@@ -409,6 +415,7 @@ class GraphRunNodeStateModel {
     required this.nodeId,
     required this.status,
     required this.attempts,
+    this.lastPrompt,
     this.startedAt,
     this.finishedAt,
     this.lastError,
@@ -419,6 +426,7 @@ class GraphRunNodeStateModel {
   final String nodeId;
   final String status;
   final int attempts;
+  final String? lastPrompt;
   final DateTime? startedAt;
   final DateTime? finishedAt;
   final String? lastError;
@@ -430,6 +438,9 @@ class GraphRunNodeStateModel {
       nodeId: _asString(json['nodeId']),
       status: _asString(json['status'], fallback: 'pending'),
       attempts: _asInt(json['attempts']),
+      lastPrompt: _asString(json['lastPrompt']).trim().isEmpty
+          ? null
+          : _asString(json['lastPrompt']).trim(),
       startedAt: _parseDateTime(json['startedAt']),
       finishedAt: _parseDateTime(json['finishedAt']),
       lastError: _asString(json['lastError']).trim().isEmpty
@@ -443,6 +454,8 @@ class GraphRunNodeStateModel {
   GraphRunNodeStateModel copyWith({
     String? status,
     int? attempts,
+    String? lastPrompt,
+    bool clearLastPrompt = false,
     DateTime? startedAt,
     bool clearStartedAt = false,
     DateTime? finishedAt,
@@ -458,6 +471,7 @@ class GraphRunNodeStateModel {
       nodeId: nodeId,
       status: status ?? this.status,
       attempts: attempts ?? this.attempts,
+      lastPrompt: clearLastPrompt ? null : (lastPrompt ?? this.lastPrompt),
       startedAt: clearStartedAt ? null : (startedAt ?? this.startedAt),
       finishedAt: clearFinishedAt ? null : (finishedAt ?? this.finishedAt),
       lastError: clearLastError ? null : (lastError ?? this.lastError),
@@ -471,6 +485,8 @@ class GraphRunNodeStateModel {
       'nodeId': nodeId,
       'status': status,
       'attempts': attempts,
+      if (lastPrompt != null && lastPrompt!.trim().isNotEmpty)
+        'lastPrompt': lastPrompt!.trim(),
       if (startedAt != null) 'startedAt': startedAt!.toIso8601String(),
       if (finishedAt != null) 'finishedAt': finishedAt!.toIso8601String(),
       if (lastError != null && lastError!.trim().isNotEmpty)

@@ -55,6 +55,41 @@ function pickString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function summarizeMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const entries: string[] = [];
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value == null) {
+      continue;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      if (normalized) {
+        entries.push(`${key}: ${normalized}`);
+      }
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      entries.push(`${key}: ${String(value)}`);
+      continue;
+    }
+    try {
+      entries.push(`${key}: ${JSON.stringify(value)}`);
+    } catch {
+      // Ignore non-serializable metadata fragments.
+    }
+  }
+
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  return truncateText(entries.join("; "), 1_200);
+}
+
 function extractFirstJsonObject(source: string): string | undefined {
   let depth = 0;
   let inString = false;
@@ -186,6 +221,32 @@ function extractArtifactsFromOutput(output: string): NodeArtifacts {
   };
 }
 
+function extractShortSummary(output: string, max = 360): string {
+  const parsed = parseJsonObject(output);
+  const structuredSummary = parsed
+    ? pickString(
+        parsed.summary,
+        parsed.finalSummary,
+        parsed.resultSummary,
+        parsed.result,
+        parsed.message,
+        parsed.output,
+      )
+    : undefined;
+
+  const fallbackSource = structuredSummary ?? output;
+  const condensed = fallbackSource
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  if (!condensed) {
+    return "No summary available.";
+  }
+
+  return truncateText(condensed, max);
+}
+
 function parseManagerAssignments(output: string): ParsedManagerAssignment[] {
   const parsed = parseJsonObject(output);
   if (!parsed) {
@@ -238,6 +299,9 @@ function buildDependencyMap(nodes: GraphNode[], edges: GraphEdge[]): Map<string,
   }
 
   for (const edge of edges) {
+    if (edge.relationType === "feedback") {
+      continue;
+    }
     map.set(edge.toNodeId, [...(map.get(edge.toNodeId) ?? []), edge.fromNodeId]);
   }
 
@@ -475,13 +539,24 @@ export class GraphOrchestrator {
       const hasFailure = nodeStates.some((state) => state.status === "failed");
       const hasCancellation = nodeStates.some((state) => state.status === "canceled");
 
-      if (finalSnapshot.cancelRequested || hasCancellation) {
-        this.store.markRunFinished(runId, "canceled", "Run canceled");
-      } else if (hasFailure) {
-        this.store.markRunFinished(runId, "failed", "One or more nodes failed");
-      } else {
-        this.store.markRunFinished(runId, "completed");
-      }
+      const finalStatus =
+        finalSnapshot.cancelRequested || hasCancellation
+          ? "canceled"
+          : hasFailure
+          ? "failed"
+          : "completed";
+      const finalError =
+        finalStatus === "canceled"
+          ? "Run canceled"
+          : finalStatus === "failed"
+          ? "One or more nodes failed"
+          : undefined;
+
+      this.store.markRunFinished(runId, finalStatus, finalError);
+      this.publishRunSummaryToManagers(
+        this.store.getRunForExecution(runId) ?? finalSnapshot,
+        finalStatus,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Graph run failed";
       this.store.markRunFinished(runId, "failed", message);
@@ -505,9 +580,11 @@ export class GraphOrchestrator {
         return;
       }
 
+      const prompt = this.buildPrompt(runId, node, dependencyIds);
       const status = attempt === 1 ? "running" : "retrying";
       this.store.setNodeStatus(runId, node.id, status, {
         attempts: attempt,
+        lastPrompt: prompt,
       });
 
       this.store.appendNodeLog(
@@ -517,12 +594,11 @@ export class GraphOrchestrator {
         `Attempt ${attempt}/${maxRetries + 1} started`,
       );
 
-      const prompt = this.buildPrompt(runId, node, dependencyIds);
-
       try {
         const result = await this.runner.run(node.config.agentId, prompt, {
           cwd: node.config.cwd ?? this.options.defaultCwd,
           timeoutMs,
+          fullAccess: node.config.fullAccess === true,
         });
 
         if (this.store.isRunCancelRequested(runId)) {
@@ -552,6 +628,9 @@ export class GraphOrchestrator {
             attempts: attempt,
             lastError: timeoutError,
           });
+          if (!isManagerNode(node)) {
+            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "failed");
+          }
           return;
         }
 
@@ -560,6 +639,8 @@ export class GraphOrchestrator {
 
         if (isManagerNode(node)) {
           this.createManagerTraceEntries(runId, node, result);
+        } else {
+          this.notifyManagersAboutSubordinateCompletion(runId, node.id, "completed");
         }
 
         return;
@@ -585,6 +666,13 @@ export class GraphOrchestrator {
             lastError: message,
           },
         );
+        if (!isManagerNode(node)) {
+          this.notifyManagersAboutSubordinateCompletion(
+            runId,
+            node.id,
+            this.store.isRunCancelRequested(runId) ? "canceled" : "failed",
+          );
+        }
         return;
       }
     }
@@ -610,22 +698,36 @@ export class GraphOrchestrator {
 
         return [
           `Dependency ${header}:`,
-          truncateText(state.result.output, MAX_DEPENDENCY_OUTPUT),
+          `summary: ${extractShortSummary(state.result.output)}`,
         ].join("\n");
       })
       .join("\n\n");
 
     const basePrompt =
       node.config.prompt?.trim() ||
-      [
-        `You are node '${node.label}' (${node.id}) in orchestration run ${runId}.`,
-        "Execute your part of the task and return a concise result.",
-      ].join(" ");
+      (isManagerNode(node)
+        ? [
+            `You are node '${node.label}' (${node.id}) in orchestration run ${runId}.`,
+            "You are the manager agent responsible for planning and delegating tasks to connected subordinate nodes.",
+            "Return concise, execution-ready assignments for subordinates.",
+          ].join(" ")
+        : [
+            `You are node '${node.label}' (${node.id}) in orchestration run ${runId}.`,
+            "Execute your part of the task and return a concise result.",
+          ].join(" "));
 
     const assignmentSection = this.buildManagerAssignmentSection(run, node.id);
     const kickoffSection = this.buildRunKickoffSection(run, node);
+    const managerPlanningSection = this.buildManagerPlanningSection(run, node);
+    const subordinatesSection = this.buildManagerSubordinatesSection(run, node);
 
     const sections = [basePrompt];
+    if (subordinatesSection) {
+      sections.push("Connected subordinate profiles:", subordinatesSection);
+    }
+    if (managerPlanningSection) {
+      sections.push("Manager planning requirements:", managerPlanningSection);
+    }
     if (kickoffSection) {
       sections.push("Run kickoff task:", kickoffSection);
     }
@@ -637,6 +739,83 @@ export class GraphOrchestrator {
     }
 
     return sections.join("\n\n");
+  }
+
+  private buildManagerSubordinatesSection(run: GraphRun, node: GraphNode): string | undefined {
+    if (!isManagerNode(node)) {
+      return undefined;
+    }
+
+    const lines: string[] = [];
+    for (const edge of run.edges) {
+      if (edge.fromNodeId !== node.id) {
+        continue;
+      }
+
+      const worker = run.nodes.find((candidate) => candidate.id === edge.toNodeId);
+      if (!worker) {
+        continue;
+      }
+
+      const metadataSummary = summarizeMetadata(worker.config.metadata);
+      const profile = [
+        `- ${worker.label} (${worker.id})`,
+        `  type=${worker.type}`,
+        `  role=${worker.config.role}`,
+        `  agent=${worker.config.agentId}`,
+        `  relationType=${edge.relationType}`,
+      ];
+      if (metadataSummary) {
+        profile.push(`  metadata=${metadataSummary}`);
+      }
+      lines.push(profile.join("\n"));
+    }
+
+    if (lines.length === 0) {
+      return undefined;
+    }
+
+    return lines.join("\n");
+  }
+
+  private buildManagerPlanningSection(run: GraphRun, node: GraphNode): string | undefined {
+    if (!isManagerNode(node)) {
+      return undefined;
+    }
+
+    const workers: Array<{ id: string; label: string; relationType: string }> = [];
+    for (const edge of run.edges) {
+      if (edge.fromNodeId !== node.id) {
+        continue;
+      }
+
+      const worker = run.nodes.find((candidate) => candidate.id === edge.toNodeId);
+      if (!worker) {
+        continue;
+      }
+
+      workers.push({
+        id: worker.id,
+        label: worker.label,
+        relationType: edge.relationType,
+      });
+    }
+
+    if (workers.length === 0) {
+      return undefined;
+    }
+
+    return [
+      "Return strict JSON object only (no markdown) with field 'assignments' as an array.",
+      "Create exactly one assignment item per worker listed below.",
+      "Each item must include: workerNodeId, task, reason.",
+      "Tasks must be mutually exclusive and non-overlapping.",
+      "Workers:",
+      ...workers.map(
+        (worker) =>
+          `- ${worker.label} (${worker.id}), relationType=${worker.relationType}`,
+      ),
+    ].join("\n");
   }
 
   private buildRunKickoffSection(run: GraphRun, node: GraphNode): string | undefined {
@@ -694,12 +873,13 @@ export class GraphOrchestrator {
     }
 
     const parsedAssignments = parseManagerAssignments(result.output);
-    const managerOutputTask =
-      result.output.trim() && parsedAssignments.length === 0
-        ? truncateText(result.output.trim(), MAX_DEPENDENCY_OUTPUT)
-        : undefined;
+    const managerOutputTask = result.output.trim()
+      ? truncateText(result.output.trim(), MAX_DEPENDENCY_OUTPUT)
+      : undefined;
+    const fallbackObjective = run.kickoffMessage?.trim() || managerOutputTask;
+    const totalWorkers = outgoing.length;
 
-    for (const edge of outgoing) {
+    for (const [index, edge] of outgoing.entries()) {
       const worker = run.nodes.find((node) => node.id === edge.toNodeId);
       if (!worker) {
         continue;
@@ -717,15 +897,120 @@ export class GraphOrchestrator {
         return false;
       });
 
+      const fallbackTask = fallbackObjective
+        ? [
+            `Worker partition ${index + 1}/${totalWorkers}.`,
+            `You are responsible only for worker '${worker.label}' (${worker.id}).`,
+            `Objective: ${fallbackObjective}`,
+            "Do not duplicate work assigned to other workers.",
+          ].join(" ")
+        : `Execute only the scoped task for worker '${worker.label}' (${worker.id}) and avoid duplicating other workers.`;
+
       this.store.addManagerTraceEntry(runId, {
         managerNodeId: managerNode.id,
         workerNodeId: worker.id,
         task:
           assignment?.task ||
-          managerOutputTask ||
-          `Execute task assigned by manager '${managerNode.label}' for worker '${worker.label}'`,
-        reason: assignment?.reason || `relationType=${edge.relationType}`,
+          fallbackTask,
+        reason:
+          assignment?.reason ||
+          `auto-partition fallback; relationType=${edge.relationType}; partition=${index + 1}/${totalWorkers}`,
       });
+    }
+  }
+
+  private notifyManagersAboutSubordinateCompletion(
+    runId: string,
+    workerNodeId: string,
+    status: "completed" | "failed" | "canceled",
+  ): void {
+    const run = this.store.getRunForExecution(runId);
+    if (!run) {
+      return;
+    }
+
+    const worker = run.nodes.find((node) => node.id === workerNodeId);
+    if (!worker) {
+      return;
+    }
+
+    const state = run.nodeStates[workerNodeId];
+    const summary = state?.result?.output
+      ? extractShortSummary(state.result.output)
+      : state?.lastError?.trim() || "No summary available.";
+
+    const managerTargets = run.edges
+      .filter(
+        (edge) =>
+          edge.fromNodeId === workerNodeId &&
+          edge.relationType === "feedback",
+      )
+      .map((edge) => run.nodes.find((node) => node.id === edge.toNodeId))
+      .filter((node): node is GraphNode => {
+        if (!node) {
+          return false;
+        }
+        return isManagerNode(node);
+      });
+
+    for (const manager of managerTargets) {
+      this.store.addNodeMessage(
+        run.graphId,
+        manager.id,
+        "system",
+        [
+          `Subordinate update: ${worker.label} (${worker.id})`,
+          `status: ${status}`,
+          `summary: ${summary}`,
+        ].join("\n"),
+        runId,
+      );
+    }
+  }
+
+  private publishRunSummaryToManagers(
+    run: GraphRun,
+    finalStatus: "completed" | "failed" | "canceled",
+  ): void {
+    const managers = run.nodes.filter((node) => isManagerNode(node));
+    if (managers.length === 0) {
+      return;
+    }
+
+    for (const manager of managers) {
+      const subordinateEdges = run.edges.filter(
+        (edge) => edge.toNodeId === manager.id && edge.relationType === "feedback",
+      );
+      if (subordinateEdges.length === 0) {
+        continue;
+      }
+
+      const lines = subordinateEdges.map((edge) => {
+        const worker = run.nodes.find((node) => node.id === edge.fromNodeId);
+        if (!worker) {
+          return `- unknown worker (${edge.fromNodeId}): no data`;
+        }
+
+        const state = run.nodeStates[worker.id];
+        const status = state?.status ?? "unknown";
+        const summary = state?.result?.output
+          ? extractShortSummary(state.result.output, 220)
+          : state?.lastError?.trim() || "No summary available.";
+
+        return `- ${worker.label} (${worker.id}) | status=${status} | summary=${summary}`;
+      });
+
+      this.store.addNodeMessage(
+        run.graphId,
+        manager.id,
+        "system",
+        [
+          `Run ${run.runId} finished with status=${finalStatus}.`,
+          "Subordinates summary:",
+          ...lines,
+        ].join("\n"),
+        run.runId,
+      );
     }
   }
 }

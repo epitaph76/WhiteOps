@@ -13,6 +13,7 @@ interface SessionRecord {
 interface NormalizedRunOptions {
   timeoutMs: number;
   idleMs: number;
+  fullAccess: boolean;
 }
 
 export class SessionManager {
@@ -130,6 +131,7 @@ export class SessionManager {
         prompt,
         timeoutMs: normalized.timeoutMs,
         cwd: options.cwd,
+        fullAccess: normalized.fullAccess,
       });
     } catch (error) {
       const message =
@@ -163,6 +165,7 @@ export class SessionManager {
     return {
       timeoutMs: Math.floor(timeoutMs),
       idleMs: Math.floor(idleMs),
+      fullAccess: options.fullAccess === true,
     };
   }
 }

@@ -7,18 +7,40 @@ interface OneShotOptions {
   prompt: string;
   timeoutMs: number;
   cwd?: string;
+  fullAccess?: boolean;
 }
 
-function buildOneShotArgs(agent: AgentSpec, prompt: string): string[] {
+function normalizePromptForCliArg(prompt: string): string {
+  return prompt.replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+function applyCodexAccessFlags(baseArgs: string[], fullAccess: boolean): string[] {
+  if (!fullAccess) {
+    return baseArgs;
+  }
+
+  return [
+    ...baseArgs,
+    "--sandbox",
+    "danger-full-access",
+    "--approval",
+    "never",
+  ];
+}
+
+function buildOneShotArgs(agent: AgentSpec, prompt: string, options: OneShotOptions): string[] {
+  const normalizedPrompt = normalizePromptForCliArg(prompt);
+
   if (agent.id === "qwen") {
-    return [...agent.args, "--output-format", "text", prompt];
+    return [...agent.args, "--output-format", "text", normalizedPrompt];
   }
 
   if (agent.id === "codex") {
-    return [...agent.args, "exec", prompt];
+    const codexArgs = applyCodexAccessFlags(agent.args, options.fullAccess === true);
+    return [...codexArgs, "exec", normalizedPrompt];
   }
 
-  return [...agent.args, prompt];
+  return [...agent.args, normalizedPrompt];
 }
 
 export function runAgentOneShot(
@@ -31,7 +53,7 @@ export function runAgentOneShot(
   }
 
   const command = resolveCommandForSpawn(agent.command);
-  const args = buildOneShotArgs(agent, prompt);
+  const args = buildOneShotArgs(agent, prompt, options);
   const isWindows = process.platform === "win32";
   const spawnCommand = isWindows ? "cmd.exe" : command;
   const spawnArgs = isWindows

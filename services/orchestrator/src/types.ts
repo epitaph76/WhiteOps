@@ -11,6 +11,7 @@ export interface RunResult {
 export interface RunOptions {
   cwd?: string;
   timeoutMs: number;
+  fullAccess?: boolean;
 }
 
 export interface AgentRunner {

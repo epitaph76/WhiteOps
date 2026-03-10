@@ -68,6 +68,7 @@ class GraphEditorController extends ChangeNotifier {
 
   String graphName = 'Новая схема оркестрации';
   String graphDescription = '';
+  String projectFilesPath = '';
   String? activeGraphId;
   int graphRevision = 1;
 
@@ -326,6 +327,7 @@ class GraphEditorController extends ChangeNotifier {
     graphRevision = graph.revision.revision;
     nodes = graph.revision.nodes;
     edges = graph.revision.edges;
+    _syncProjectPathFromNodesIfUniform();
     selectedNodeIds.clear();
     selectedEdgeId = null;
     activeRun = null;
@@ -343,6 +345,11 @@ class GraphEditorController extends ChangeNotifier {
 
   void setGraphDescription(String value) {
     graphDescription = value;
+    notifyListeners();
+  }
+
+  void setProjectFilesPath(String value) {
+    projectFilesPath = value.trim();
     notifyListeners();
   }
 
@@ -476,6 +483,7 @@ class GraphEditorController extends ChangeNotifier {
     String? type,
     String? agentId,
     String? role,
+    bool? fullAccess,
     String? cwd,
     bool clearCwd = false,
     String? prompt,
@@ -496,6 +504,7 @@ class GraphEditorController extends ChangeNotifier {
           final nextConfig = node.config.copyWith(
             agentId: agentId,
             role: role,
+            fullAccess: fullAccess,
             cwd: cwd,
             clearCwd: clearCwd,
             prompt: prompt,
@@ -629,6 +638,7 @@ class GraphEditorController extends ChangeNotifier {
     notifyListeners();
 
     try {
+      _applyProjectPathToNodesWithoutCwd();
       final request = GraphUpsertRequest(
         name: trimmedName,
         description: graphDescription.trim().isEmpty
@@ -874,12 +884,15 @@ class GraphEditorController extends ChangeNotifier {
       final status = _readString(data['status']) ?? previous.status;
       final attempts = _readInt(data['attempts']) ?? previous.attempts;
       final lastError = _readString(data['lastError']);
+      final lastPrompt = _readString(data['lastPrompt']);
 
       nextNodeStates[eventNodeId] = previous.copyWith(
         status: status,
         attempts: attempts,
         lastError: lastError,
         clearLastError: lastError == null,
+        lastPrompt: lastPrompt,
+        clearLastPrompt: lastPrompt == null,
       );
     }
 
@@ -979,7 +992,7 @@ class GraphEditorController extends ChangeNotifier {
 
   Future<bool> sendMessageToNode(String nodeId, String message) async {
     final trimmed = message.trim();
-    if (trimmed.isEmpty || _disposed || activeGraphId == null) {
+    if (trimmed.isEmpty || _disposed) {
       return false;
     }
 
@@ -1005,12 +1018,22 @@ class GraphEditorController extends ChangeNotifier {
         return true;
       }
 
+      if (activeGraphId == null) {
+        _setError('Save graph before sending messages to non-manager nodes.');
+        return false;
+      }
+
       final response = await _api.sendNodeMessage(
         nodeId,
         NodeChatRequestModel(
           message: trimmed,
           graphId: activeGraphId,
           runId: activeRun?.runId,
+          cwd: node?.config.cwd?.trim().isNotEmpty == true
+              ? node!.config.cwd
+              : projectFilesPath.trim().isEmpty
+              ? null
+              : projectFilesPath.trim(),
         ),
       );
 
@@ -1043,6 +1066,7 @@ class GraphEditorController extends ChangeNotifier {
     final payload = {
       'savedAt': DateTime.now().toUtc().toIso8601String(),
       'baseUrl': baseUrl,
+      'projectFilesPath': projectFilesPath,
       'graph': {
         'graphId': activeGraphId,
         'name': graphName,
@@ -1087,6 +1111,7 @@ class GraphEditorController extends ChangeNotifier {
       }
 
       final graphMap = graphRaw.map((key, value) => MapEntry('$key', value));
+      projectFilesPath = _readString(decoded['projectFilesPath']) ?? '';
 
       graphName = _readString(graphMap['name']) ?? graphName;
       graphDescription = _readString(graphMap['description']) ?? '';
@@ -1123,6 +1148,9 @@ class GraphEditorController extends ChangeNotifier {
 
       nodes = loadedNodes;
       edges = loadedEdges;
+      if (projectFilesPath.trim().isEmpty) {
+        _syncProjectPathFromNodesIfUniform();
+      }
       selectedNodeIds.clear();
       selectedEdgeId = null;
       activeRun = null;
@@ -1185,6 +1213,7 @@ class GraphEditorController extends ChangeNotifier {
   void _setDefaultGraph() {
     graphName = 'Новая схема оркестрации';
     graphDescription = '';
+    projectFilesPath = '';
     activeGraphId = null;
     graphRevision = 1;
     nodes = const [];
@@ -1282,6 +1311,54 @@ class GraphEditorController extends ChangeNotifier {
       }
     }
     return false;
+  }
+
+  void _applyProjectPathToNodesWithoutCwd() {
+    final projectPath = projectFilesPath.trim();
+    if (projectPath.isEmpty) {
+      return;
+    }
+
+    var changed = false;
+    final updated = nodes
+        .map((node) {
+          final nodeCwd = node.config.cwd?.trim();
+          if (nodeCwd != null && nodeCwd.isNotEmpty) {
+            return node;
+          }
+
+          changed = true;
+          return node.copyWith(config: node.config.copyWith(cwd: projectPath));
+        })
+        .toList(growable: false);
+
+    if (changed) {
+      nodes = updated;
+      _bumpLocalRevision();
+    }
+  }
+
+  void _syncProjectPathFromNodesIfUniform() {
+    if (nodes.isEmpty) {
+      projectFilesPath = '';
+      return;
+    }
+
+    final values = nodes
+        .map((node) => node.config.cwd?.trim() ?? '')
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+
+    if (values.isEmpty) {
+      projectFilesPath = '';
+      return;
+    }
+
+    final first = values.first;
+    final uniform = values.every((value) => value == first) &&
+        nodes.every((node) => (node.config.cwd?.trim() ?? '').isNotEmpty);
+
+    projectFilesPath = uniform ? first : '';
   }
 
   void _bumpLocalRevision() {
