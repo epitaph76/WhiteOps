@@ -21,6 +21,7 @@ export interface BridgeSettings {
   url: string;
   requestTimeoutMs: number;
   autostart: boolean;
+  showConsole: boolean;
   startCommand: string;
   startArgs: string[];
   startCwd: string;

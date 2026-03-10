@@ -247,6 +247,13 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
     final runningTasks = _readInt(health?['runningTasks']) ?? 0;
     final runningGraphRuns = _readInt(health?['runningGraphRuns']) ?? 0;
     final graphsCount = _readInt(health?['graphs']) ?? 0;
+    final hasSelectedRun = _controller.activeRun != null;
+    final sseConnected = _controller.runStreamConnected;
+    final sseLabel = hasSelectedRun
+        ? (sseConnected
+              ? 'SSE запуска подключен'
+              : 'SSE запуска отключен')
+        : 'SSE не активен: выбери запуск';
 
     return Card(
       child: Padding(
@@ -356,38 +363,44 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: _controller.runStreamConnected
+                    color: sseConnected
                         ? const Color(0xFFDFF8E9)
-                        : const Color(0xFFEFF2F6),
+                        : hasSelectedRun
+                        ? const Color(0xFFEFF2F6)
+                        : const Color(0xFFFFF6DD),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                      color: _controller.runStreamConnected
+                      color: sseConnected
                           ? const Color(0xFF98E0B0)
-                          : const Color(0xFFD3D9E2),
+                          : hasSelectedRun
+                          ? const Color(0xFFD3D9E2)
+                          : const Color(0xFFE8D89A),
                     ),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        _controller.runStreamConnected
+                        sseConnected
                             ? Icons.wifi
                             : Icons.wifi_off,
                         size: 14,
-                        color: _controller.runStreamConnected
+                        color: sseConnected
                             ? const Color(0xFF1B6A38)
-                            : const Color(0xFF657488),
+                            : hasSelectedRun
+                            ? const Color(0xFF657488)
+                            : const Color(0xFF7A6A22),
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        _controller.runStreamConnected
-                            ? 'SSE запуска подключен'
-                            : 'SSE запуска отключен',
+                        sseLabel,
                         style: TextStyle(
                           fontSize: 12,
-                          color: _controller.runStreamConnected
+                          color: sseConnected
                               ? const Color(0xFF1B6A38)
-                              : const Color(0xFF657488),
+                              : hasSelectedRun
+                              ? const Color(0xFF657488)
+                              : const Color(0xFF7A6A22),
                         ),
                       ),
                     ],

@@ -303,11 +303,13 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
 
   Future<void> _sendMessage() async {
     final message = _messageController.text;
-    await widget.controller.sendMessageToNode(widget.node.id, message);
+    final sent = await widget.controller.sendMessageToNode(widget.node.id, message);
     if (!mounted) {
       return;
     }
-    _messageController.clear();
+    if (sent) {
+      _messageController.clear();
+    }
   }
 
   String _roleLabel(String role) {

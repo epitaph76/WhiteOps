@@ -179,18 +179,42 @@ class GraphEditorController extends ChangeNotifier {
     await _runEventsSubscription?.cancel();
     _runEventsSubscription = null;
 
-    _api.close();
-    _baseUrl = normalized;
-    _api = GraphApiClient(baseUrl: normalized);
-
-    health = null;
-    availableGraphs = const [];
-    availableRuns = const [];
-    activeRun = null;
-    runStreamConnected = false;
+    final previousBaseUrl = _baseUrl;
+    final previousApi = _api;
+    final nextApi = GraphApiClient(baseUrl: normalized);
 
     try {
-      await initialize();
+      final nextHealth = await nextApi.getHealth();
+      final nextGraphs = await nextApi.listGraphs(limit: 100);
+
+      _baseUrl = normalized;
+      _api = nextApi;
+      previousApi.close();
+
+      health = nextHealth;
+      availableGraphs = nextGraphs;
+      availableRuns = const [];
+      activeRun = null;
+      runStreamConnected = false;
+      nodeMessages.clear();
+      nodeLogs.clear();
+
+      if (availableGraphs.isNotEmpty) {
+        await loadGraph(availableGraphs.first.id);
+        clearInfo();
+      } else {
+        // Keep canvas as local draft when backend has no saved graphs yet.
+        activeGraphId = null;
+        graphRevision = 1;
+        infoMessage =
+            'Connected to $normalized. Backend has no saved graphs yet.';
+        notifyListeners();
+      }
+    } catch (error) {
+      nextApi.close();
+      _baseUrl = previousBaseUrl;
+      _api = previousApi;
+      _setError('Failed to connect to $normalized: $error');
     } finally {
       if (!_disposed) {
         reconnecting = false;
@@ -673,16 +697,17 @@ class GraphEditorController extends ChangeNotifier {
     }
   }
 
-  Future<void> startRun({
+  Future<bool> startRun({
     String? kickoffMessage,
     String? kickoffManagerNodeId,
   }) async {
     if (_disposed) {
-      return;
+      return false;
     }
 
     if (runningGraph) {
-      return;
+      _setError('Run is already starting. Please wait.');
+      return false;
     }
 
     runningGraph = true;
@@ -692,7 +717,7 @@ class GraphEditorController extends ChangeNotifier {
     try {
       final saved = await saveGraphToBackend();
       if (!saved || activeGraphId == null) {
-        return;
+        return false;
       }
 
       final run = await _api.createGraphRun(
@@ -708,8 +733,10 @@ class GraphEditorController extends ChangeNotifier {
           kickoffMessage != null && kickoffMessage.trim().isNotEmpty
           ? 'Run started from manager task: ${run.runId}'
           : 'Run started: ${run.runId}';
+      return true;
     } catch (error) {
       _setError('Failed to start graph run: $error');
+      return false;
     } finally {
       if (!_disposed) {
         runningGraph = false;
@@ -950,10 +977,10 @@ class GraphEditorController extends ChangeNotifier {
     }
   }
 
-  Future<void> sendMessageToNode(String nodeId, String message) async {
+  Future<bool> sendMessageToNode(String nodeId, String message) async {
     final trimmed = message.trim();
     if (trimmed.isEmpty || _disposed || activeGraphId == null) {
-      return;
+      return false;
     }
 
     sendingNodeMessage = true;
@@ -967,12 +994,15 @@ class GraphEditorController extends ChangeNotifier {
           (node.type == 'manager' || node.config.role == 'manager');
 
       if (isManagerNode) {
-        await startRun(
+        final started = await startRun(
           kickoffMessage: trimmed,
           kickoffManagerNodeId: nodeId,
         );
+        if (!started) {
+          return false;
+        }
         await loadNodeDialogData(nodeId);
-        return;
+        return true;
       }
 
       final response = await _api.sendNodeMessage(
@@ -997,8 +1027,10 @@ class GraphEditorController extends ChangeNotifier {
       nodeMessages[nodeId] = existing;
 
       await loadNodeDialogData(nodeId);
+      return true;
     } catch (error) {
-      _setError('?? ??????? ????????? ????????? ????: $error');
+      _setError('Failed to send node message: $error');
+      return false;
     } finally {
       if (!_disposed) {
         sendingNodeMessage = false;

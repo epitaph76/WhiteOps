@@ -1,7 +1,7 @@
 import {
   spawn,
   execFileSync,
-  ChildProcessWithoutNullStreams,
+  ChildProcess,
 } from "node:child_process";
 
 import { BridgeSettings } from "../types";
@@ -35,7 +35,7 @@ async function checkHealth(baseUrl: string): Promise<boolean> {
 }
 
 export class BridgeSupervisor {
-  private child?: ChildProcessWithoutNullStreams;
+  private child?: ChildProcess;
   private startingPromise?: Promise<void>;
   private startupLogs: string[] = [];
 
@@ -44,7 +44,7 @@ export class BridgeSupervisor {
   async status(): Promise<BridgeSupervisorStatus> {
     return {
       healthy: await checkHealth(this.config.url),
-      managedProcessRunning: Boolean(this.child && !this.child.killed),
+      managedProcessRunning: Boolean(this.child && this.child.exitCode === null),
     };
   }
 
@@ -115,16 +115,18 @@ export class BridgeSupervisor {
       cwd: this.config.startCwd,
       env: this.buildBridgeEnv(),
       shell: false,
-      windowsHide: true,
-      stdio: "pipe",
+      windowsHide: !this.config.showConsole,
+      stdio: this.config.showConsole ? "inherit" : "pipe",
     });
 
-    this.child.stdout.on("data", (chunk) => {
-      this.pushStartupLog(chunk);
-    });
-    this.child.stderr.on("data", (chunk) => {
-      this.pushStartupLog(chunk);
-    });
+    if (!this.config.showConsole) {
+      this.child.stdout?.on("data", (chunk) => {
+        this.pushStartupLog(chunk);
+      });
+      this.child.stderr?.on("data", (chunk) => {
+        this.pushStartupLog(chunk);
+      });
+    }
 
     this.child.on("exit", () => {
       this.child = undefined;

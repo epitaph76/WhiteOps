@@ -13,7 +13,9 @@ function parseArgs(input: string): string[] {
   let quote: "'" | "\"" | null = null;
   let escaped = false;
 
-  for (const char of source) {
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+
     if (escaped) {
       current += char;
       escaped = false;
@@ -21,7 +23,17 @@ function parseArgs(input: string): string[] {
     }
 
     if (char === "\\") {
-      escaped = true;
+      const next = source[i + 1];
+      const shouldEscapeInQuote =
+        Boolean(quote) && (next === quote || next === "\\");
+      const shouldEscapeWhitespace = !quote && Boolean(next && /\s/.test(next));
+
+      if (shouldEscapeInQuote || shouldEscapeWhitespace) {
+        escaped = true;
+        continue;
+      }
+
+      current += char;
       continue;
     }
 
@@ -189,6 +201,7 @@ export function loadConfig(): OrchestratorConfig {
       url: readString("BRIDGE_URL", "http://127.0.0.1:7071"),
       requestTimeoutMs: readNumber("BRIDGE_REQUEST_TIMEOUT_MS", 180_000),
       autostart: readBoolean("BRIDGE_AUTOSTART", true),
+      showConsole: readBoolean("BRIDGE_SHOW_CONSOLE", true),
       startCommand: readString("BRIDGE_START_CMD", "node"),
       startArgs: parseArgs(
         readString(

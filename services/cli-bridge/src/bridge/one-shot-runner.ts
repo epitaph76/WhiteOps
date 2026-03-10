@@ -48,7 +48,7 @@ export function runAgentOneShot(
       cwd: options.cwd ?? process.cwd(),
       env: process.env,
       shell: false,
-      windowsHide: true,
+      windowsHide: false,
     });
 
     const closeGuard = setTimeout(() => {

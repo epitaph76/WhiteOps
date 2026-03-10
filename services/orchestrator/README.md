@@ -15,6 +15,7 @@ Standalone orchestration service for `Codex manager + 2 Qwen workers`.
 In `bridge` mode the orchestrator can start `cli-bridge` automatically if it is offline:
 
 - `BRIDGE_AUTOSTART=true`
+- `BRIDGE_SHOW_CONSOLE=true` (show bridge stdout/stderr in the current console)
 - `BRIDGE_START_CMD=node`
 - `BRIDGE_START_ARGS=node_modules/tsx/dist/cli.mjs watch src/index.ts`
 - `BRIDGE_START_CWD=C:/project/WhiteOps/services/cli-bridge`

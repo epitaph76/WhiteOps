@@ -11,7 +11,9 @@ function parseArgs(input: string): string[] {
   let quote: "'" | '"' | null = null;
   let escaped = false;
 
-  for (const char of source) {
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+
     if (escaped) {
       current += char;
       escaped = false;
@@ -19,7 +21,17 @@ function parseArgs(input: string): string[] {
     }
 
     if (char === "\\") {
-      escaped = true;
+      const next = source[i + 1];
+      const shouldEscapeInQuote =
+        Boolean(quote) && (next === quote || next === "\\");
+      const shouldEscapeWhitespace = !quote && Boolean(next && /\s/.test(next));
+
+      if (shouldEscapeInQuote || shouldEscapeWhitespace) {
+        escaped = true;
+        continue;
+      }
+
+      current += char;
       continue;
     }
 
