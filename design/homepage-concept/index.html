@@ -1,0 +1,406 @@
+﻿<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WhiteOps Home Concept</title>
+  <style>
+    :root {
+      --bg0: #eef2fb;
+      --bg1: #d7e3ff;
+      --bg2: #cde4ef;
+      --glass: rgba(255, 255, 255, 0.58);
+      --glass-strong: rgba(255, 255, 255, 0.76);
+      --stroke: rgba(47, 73, 124, 0.18);
+      --text: #122039;
+      --muted: #4f607f;
+      --accent: #0a84ff;
+      --ok: #14b87a;
+      --warn: #f5a524;
+      --err: #f04c63;
+      --radius: 18px;
+      --shadow: 0 20px 40px rgba(28, 42, 76, 0.16);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "SF Pro Display", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 500px at 20% -5%, #ffffffcf, transparent 55%),
+        radial-gradient(800px 450px at 90% 8%, #b7e0ffc2, transparent 60%),
+        linear-gradient(140deg, var(--bg0), var(--bg1) 45%, var(--bg2));
+      padding: 26px;
+      overflow: hidden;
+    }
+
+    .orb {
+      position: fixed;
+      border-radius: 999px;
+      filter: blur(30px);
+      opacity: 0.48;
+      pointer-events: none;
+    }
+    .orb.one { width: 340px; height: 340px; background: #a7f0d0; top: 60px; left: 18%; }
+    .orb.two { width: 260px; height: 260px; background: #8db5ff; bottom: 80px; right: 18%; }
+
+    .window {
+      width: min(1680px, calc(100vw - 52px));
+      height: min(980px, calc(100vh - 52px));
+      margin: 0 auto;
+      border-radius: 24px;
+      border: 1px solid var(--stroke);
+      background: linear-gradient(140deg, rgba(255,255,255,0.72), rgba(255,255,255,0.44));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(28px) saturate(180%);
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      grid-template-rows: 92px 1fr;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-radius: var(--radius);
+      border: 1px solid var(--stroke);
+      background: var(--glass-strong);
+      padding: 14px 18px;
+      backdrop-filter: blur(20px);
+    }
+
+    .title h1 { margin: 0; font-size: 22px; letter-spacing: 0.2px; }
+    .title p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+
+    .header-right { display: flex; align-items: center; gap: 10px; }
+    .field {
+      width: 320px;
+      height: 38px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.84);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      color: #2a3a5e;
+      font-size: 13px;
+    }
+
+    .btn {
+      height: 38px;
+      border: 0;
+      border-radius: 12px;
+      padding: 0 14px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: default;
+    }
+    .btn.primary { background: linear-gradient(120deg, #0b84ff, #3aa7ff); color: #fff; }
+    .btn.ghost { background: rgba(255,255,255,0.8); color: #224075; border: 1px solid var(--stroke); }
+
+    .chips { display: flex; gap: 8px; margin-left: 8px; }
+    .chip {
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.76);
+      border: 1px solid var(--stroke);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #314971;
+      white-space: nowrap;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; }
+
+    .canvas-wrap {
+      border-radius: var(--radius);
+      border: 1px solid var(--stroke);
+      background:
+        linear-gradient(rgba(111, 137, 188, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(111, 137, 188, 0.07) 1px, transparent 1px),
+        rgba(255,255,255,0.48);
+      background-size: 24px 24px, 24px 24px, auto;
+      position: relative;
+      overflow: hidden;
+      backdrop-filter: blur(14px);
+    }
+
+    .node {
+      position: absolute;
+      width: 230px;
+      border-radius: 14px;
+      border: 1px solid rgba(33,56,102,0.22);
+      background: rgba(255,255,255,0.86);
+      box-shadow: 0 10px 26px rgba(25,40,74,0.12);
+      padding: 11px;
+      font-size: 11px;
+    }
+    .node h4 { margin: 0 0 8px; font-size: 13px; }
+    .node .meta { color: #50658d; font-size: 10px; }
+    .node .status {
+      margin-top: 8px;
+      display: inline-flex;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+      border: 1px solid rgba(17,83,62,0.2);
+      background: rgba(20,184,122,0.18);
+      color: #0f7d54;
+    }
+
+    .edge {
+      position: absolute;
+      border-top: 2px solid;
+      transform-origin: left center;
+      opacity: 0.84;
+    }
+    .edge-label {
+      position: absolute;
+      padding: 3px 7px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.84);
+      border: 1px solid var(--stroke);
+      font-size: 10px;
+      color: #3f5786;
+    }
+
+    .sidebar {
+      border-radius: var(--radius);
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.62);
+      padding: 12px;
+      backdrop-filter: blur(16px);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    .panel {
+      border-radius: 14px;
+      border: 1px solid rgba(46,72,124,0.18);
+      background: rgba(255,255,255,0.74);
+      padding: 10px;
+    }
+    .panel h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0.2px; }
+    .row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .mini {
+      flex: 1;
+      height: 30px;
+      border-radius: 10px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.82);
+      font-size: 11px;
+      padding: 6px 8px;
+      color: #39527e;
+    }
+
+    .banner {
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      right: 376px;
+      display: flex;
+      gap: 8px;
+      z-index: 10;
+    }
+    .notice {
+      border-radius: 10px;
+      border: 1px solid;
+      padding: 8px 10px;
+      font-size: 11px;
+      backdrop-filter: blur(14px);
+      background: rgba(255,255,255,0.66);
+    }
+
+    .minimap, .zoom {
+      position: absolute;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.78);
+      backdrop-filter: blur(14px);
+    }
+    .minimap { width: 180px; height: 118px; right: 14px; bottom: 14px; }
+    .zoom { left: 14px; bottom: 14px; height: 40px; padding: 6px; display: flex; gap: 6px; }
+    .zoom span {
+      width: 28px;
+      border-radius: 8px;
+      border: 1px solid rgba(48,70,117,0.2);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      background: rgba(255,255,255,0.9);
+    }
+
+    .dialog {
+      position: absolute;
+      left: 50%;
+      top: 52%;
+      transform: translate(-50%, -50%);
+      width: 780px;
+      height: 420px;
+      border-radius: 16px;
+      border: 1px solid rgba(45,70,121,0.2);
+      background: rgba(252, 254, 255, 0.84);
+      backdrop-filter: blur(24px);
+      box-shadow: 0 28px 50px rgba(20,31,57,0.2);
+      display: grid;
+      grid-template-rows: 46px 1fr;
+      overflow: hidden;
+    }
+    .dialog-head {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(48,72,124,0.16);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .dialog-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 10px;
+      font-size: 11px;
+    }
+    .pane {
+      border-radius: 12px;
+      border: 1px solid rgba(46,72,122,0.16);
+      background: rgba(255,255,255,0.72);
+      padding: 8px;
+    }
+    .msg, .log {
+      border-radius: 8px;
+      padding: 6px;
+      margin-bottom: 6px;
+      background: rgba(245,249,255,0.8);
+      border: 1px solid rgba(59,89,141,0.1);
+    }
+  </style>
+</head>
+<body>
+  <div class="orb one"></div>
+  <div class="orb two"></div>
+
+  <main class="window">
+    <header class="header">
+      <div class="title">
+        <h1>Схема оркестрации</h1>
+        <p>Desktop-first редактор графа AI-агентов с live run и SSE наблюдением</p>
+      </div>
+      <div class="header-right">
+        <div class="field">http://localhost:3000</div>
+        <button class="btn primary">Подключить</button>
+        <button class="btn ghost">Обновить</button>
+        <div class="chips">
+          <div class="chip"><span class="dot" style="background: var(--ok)"></span>service: ok</div>
+          <div class="chip">mode: bridge</div>
+          <div class="chip">схем: 4</div>
+          <div class="chip">runs: 12</div>
+          <div class="chip">SSE: connected</div>
+        </div>
+      </div>
+    </header>
+
+    <section class="canvas-wrap">
+      <div class="banner">
+        <div class="notice" style="border-color: rgba(20,184,122,.35); color:#0e7d53;">INFO: run #304 подключен, поток событий активен</div>
+        <div class="notice" style="border-color: rgba(245,165,36,.35); color:#8d6319;">WARNING: у node-reviewer истекает timeout</div>
+      </div>
+
+      <div class="edge" style="width:240px; left:315px; top:188px; border-color:#0a84ff; transform:rotate(7deg);"></div>
+      <div class="edge" style="width:270px; left:580px; top:206px; border-color:#14b87a; transform:rotate(25deg);"></div>
+      <div class="edge" style="width:255px; left:560px; top:322px; border-color:#f5a524; transform:rotate(-18deg);"></div>
+      <div class="edge" style="width:220px; left:780px; top:280px; border-color:#f04c63; transform:rotate(11deg);"></div>
+      <div class="edge-label" style="left:420px; top:180px;">manager_to_worker</div>
+      <div class="edge-label" style="left:650px; top:258px;">dependency</div>
+      <div class="edge-label" style="left:700px; top:230px;">feedback</div>
+
+      <article class="node" style="left:86px; top:130px; border-color:rgba(10,132,255,.45); box-shadow:0 0 0 2px rgba(10,132,255,.13), 0 14px 30px rgba(25,40,74,.15);">
+        <h4>Manager Codex</h4>
+        <div class="meta">manager | codex | full-access</div>
+        <div class="meta">timeout 120000 ms | retries 2</div>
+        <span class="status">running</span>
+      </article>
+
+      <article class="node" style="left:378px; top:168px;">
+        <h4>Worker Qwen / Build</h4>
+        <div class="meta">worker | qwen | sandbox</div>
+        <div class="meta">timeout 90000 ms | retries 1</div>
+        <span class="status" style="background:rgba(58,167,255,.18); color:#0c5f9f; border-color:rgba(58,167,255,.35);">ready</span>
+      </article>
+
+      <article class="node" style="left:676px; top:228px;">
+        <h4>Reviewer Codex</h4>
+        <div class="meta">reviewer | codex | sandbox</div>
+        <div class="meta">error: output token limit reached</div>
+        <span class="status" style="background:rgba(240,76,99,.18); color:#9e2a3e; border-color:rgba(240,76,99,.35);">retrying</span>
+      </article>
+
+      <article class="node" style="left:980px; top:262px;">
+        <h4>Worker Qwen / Docs</h4>
+        <div class="meta">worker | qwen | sandbox</div>
+        <div class="meta">timeout 60000 ms | retries 0</div>
+        <span class="status" style="background:rgba(20,184,122,.18); color:#0f7d54; border-color:rgba(20,184,122,.35);">completed</span>
+      </article>
+
+      <div class="zoom"><span>-</span><span>+</span><span>85%</span><span>Reset</span></div>
+      <div class="minimap"></div>
+
+      <div class="dialog">
+        <div class="dialog-head">Диалог узла: Manager Codex <span style="font-weight:500;color:#51658e">SSE synced</span></div>
+        <div class="dialog-body">
+          <section class="pane">
+            <div class="msg"><b>Пользователь</b> 10:43: Подготовь run для проверки CI pipeline.</div>
+            <div class="msg"><b>Ассистент</b> 10:44: Разложил задачи на 3 worker-ноды и добавил dependency.</div>
+            <div class="msg"><b>Система</b> 10:44: kickoff run #304 queued -> running.</div>
+            <div class="mini" style="height:36px; margin-top:10px;">Сообщение узлу...</div>
+          </section>
+          <section class="pane">
+            <div class="log">[stream] seq:112 10:44:21 worker-build started</div>
+            <div class="log">[stream] seq:113 10:44:24 reviewer retry scheduled</div>
+            <div class="log">state: {"status":"running","attempts":2,"lastError":"token limit"}</div>
+            <div class="log">artifacts: stdout, stderr, diffPatch, resultFiles</div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <section class="panel">
+        <h3>Состояние схемы</h3>
+        <div class="row"><div class="mini">Схема: whiteops-main (rev 18)</div></div>
+        <div class="row"><div class="mini">Название</div><div class="mini">Описание</div></div>
+        <div class="row"><div class="mini">projectFilesPath</div></div>
+        <div class="row"><div class="mini">Сохранить в API</div><div class="mini">Проверить схему</div></div>
+        <div class="row"><div class="mini">Узлы: 12 | Связи: 16 | Snap: ON</div></div>
+      </section>
+
+      <section class="panel">
+        <h3>Палитра</h3>
+        <div class="row"><div class="mini">Менеджер Codex</div><div class="mini">Воркер Qwen</div></div>
+        <div class="row"><div class="mini">Создать модель агента</div></div>
+        <div class="row"><div class="mini">relation: manager_to_worker</div></div>
+      </section>
+
+      <section class="panel" style="margin-top:auto;">
+        <h3>Управление запуском</h3>
+        <div class="row"><div class="mini">Запустить схему</div><div class="mini">Остановить</div></div>
+        <div class="row"><div class="mini">run #304 (running)</div></div>
+        <div class="row"><div class="mini">rev 18 | cancel: no | events: 113</div></div>
+      </section>
+    </aside>
+  </main>
+  <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>`r`n</body>
+</html>
+

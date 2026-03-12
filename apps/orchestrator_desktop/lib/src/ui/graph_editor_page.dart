@@ -502,9 +502,9 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
                 child: OutlinedButton.icon(
                   onPressed: _controller.loadingGraphs
                       ? null
-                      : () => unawaited(_controller.refreshGraphs()),
+                      : () => unawaited(_controller.refreshLocalSavedGraphs()),
                   icon: const Icon(Icons.list),
-                  label: const Text('Обновить'),
+                  label: const Text('Local list'),
                 ),
               ),
               const SizedBox(width: 8),
@@ -570,7 +570,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
   }
 
   Widget _buildSavedGraphsList(String? selectedGraphId) {
-    final graphs = _controller.availableGraphs;
+    final graphs = _controller.localSavedGraphs;
     if (graphs.isEmpty) {
       return Container(
         width: double.infinity,
@@ -581,7 +581,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
           border: Border.all(color: const Color(0xFFD4E1EF)),
         ),
         child: const Text(
-          'No saved graphs yet. Save current canvas to API to create one.',
+          'No local saved graphs yet. Save current canvas locally to create one.',
           style: TextStyle(fontSize: 12, color: Color(0xFF51657B)),
         ),
       );
@@ -600,7 +600,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
             child: InkWell(
               borderRadius: BorderRadius.circular(10),
               onTap: () async {
-                await _controller.loadGraph(graph.id);
+                await _controller.loadLocalSavedGraph(graph.id);
                 if (!mounted) {
                   return;
                 }
@@ -636,7 +636,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
                           ),
                           const SizedBox(height: 3),
                           Text(
-                            'r${graph.latestRevision}  |  ${graph.revision.nodes.length} nodes, ${graph.revision.edges.length} edges',
+                            '${graph.nodes.length} nodes, ${graph.edges.length} edges',
                             style: const TextStyle(
                               fontSize: 11.5,
                               color: Color(0xFF5A7088),
@@ -645,11 +645,49 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
                         ],
                       ),
                     ),
+                    IconButton(
+                      tooltip: 'Delete local graph',
+                      onPressed: () async {
+                        final confirmed = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('Delete local graph?'),
+                            content: Text(
+                              'Delete "${graph.name}" from local saved list?',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(false),
+                                child: const Text('Cancel'),
+                              ),
+                              FilledButton(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(true),
+                                child: const Text('Delete'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed == true) {
+                          await _controller.deleteLocalSavedGraph(graph.id);
+                        }
+                      },
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        size: 18,
+                        color: Color(0xFF8E3A3A),
+                      ),
+                    ),
                     const SizedBox(width: 8),
                     SizedBox(
                       width: 116,
                       height: 66,
-                      child: _GraphPreviewBox(graph: graph, selected: selected),
+                      child: _GraphPreviewBox(
+                        nodes: graph.nodes,
+                        edges: graph.edges,
+                        selected: selected,
+                      ),
                     ),
                   ],
                 ),
@@ -661,6 +699,10 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
   }
 
   Future<void> _showSavedGraphsDialog() async {
+    await _controller.refreshLocalSavedGraphs(showLoading: false);
+    if (!mounted) {
+      return;
+    }
     await showDialog<void>(
       context: context,
       builder: (context) {
@@ -674,7 +716,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Saved graphs',
+                    'Local saved graphs',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 8),
@@ -682,7 +724,7 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) => _buildSavedGraphsList(
-                        _controller.activeGraphId,
+                        _controller.activeLocalGraphId,
                       ),
                     ),
                   ),
@@ -693,7 +735,8 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
                         child: OutlinedButton.icon(
                           onPressed: _controller.loadingGraphs
                               ? null
-                              : () => unawaited(_controller.refreshGraphs()),
+                              : () =>
+                                  unawaited(_controller.refreshLocalSavedGraphs()),
                           icon: const Icon(Icons.refresh),
                           label: const Text('Refresh'),
                         ),
@@ -1239,9 +1282,14 @@ class _GraphEditorPageState extends State<GraphEditorPage> {
 }
 
 class _GraphPreviewBox extends StatelessWidget {
-  const _GraphPreviewBox({required this.graph, required this.selected});
+  const _GraphPreviewBox({
+    required this.nodes,
+    required this.edges,
+    required this.selected,
+  });
 
-  final OrchestrationGraphModel graph;
+  final List<GraphNodeModel> nodes;
+  final List<GraphEdgeModel> edges;
   final bool selected;
 
   @override
@@ -1256,8 +1304,8 @@ class _GraphPreviewBox extends StatelessWidget {
       ),
       child: CustomPaint(
         painter: _GraphPreviewPainter(
-          nodes: graph.revision.nodes,
-          edges: graph.revision.edges,
+          nodes: nodes,
+          edges: edges,
         ),
       ),
     );
@@ -1360,3 +1408,4 @@ class _GraphPreviewPainter extends CustomPainter {
     return oldDelegate.nodes != nodes || oldDelegate.edges != edges;
   }
 }
+

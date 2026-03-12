@@ -39,12 +39,12 @@ Optional PostgreSQL snapshot backend (Docker):
 
 ```powershell
 cd C:\project\WhiteOps
-docker compose up -d postgres
+docker compose up -d graph_store_postgres
 ```
 
 Use `.env` values:
 
-- `GRAPH_STORE_PG_URL=postgresql://whiteops:whiteops@127.0.0.1:5432/whiteops`
+- `GRAPH_STORE_PG_URL=postgresql://whiteops_graph_store:whiteops_graph_store@127.0.0.1:5433/whiteops_graph_store`
 - `GRAPH_STORE_PG_TABLE=orchestrator_graph_store_snapshot`
 
 ## Frontend-Oriented API

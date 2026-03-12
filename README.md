@@ -68,7 +68,7 @@ npm run dev
 
 ```powershell
 cd C:\project\WhiteOps
-docker compose up -d postgres
+docker compose up -d graph_store_postgres
 
 cd C:\project\WhiteOps\services\orchestrator
 Copy-Item .env.example .env
@@ -83,7 +83,7 @@ Invoke-RestMethod http://127.0.0.1:7071/health
 Invoke-RestMethod http://127.0.0.1:7081/health
 ```
 
-`start-whiteops.bat` теперь поднимает `postgres` из `docker-compose.yml` автоматически (если Docker доступен).
+`start-whiteops.bat` теперь поднимает отдельный `graph_store_postgres` из `docker-compose.yml` автоматически (если Docker доступен).
 
 ## Дорожная карта
 

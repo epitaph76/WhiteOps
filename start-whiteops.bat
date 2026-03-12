@@ -34,9 +34,15 @@ if not exist "%ROOT%services\orchestrator\.env" (
 )
 
 if exist "%ROOT%services\orchestrator\.env" (
+  powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$path='%ROOT%services\orchestrator\.env'; " ^
+    "$content=Get-Content -Path $path -Raw; " ^
+    "$content=$content -replace 'GRAPH_STORE_PG_URL=postgresql://whiteops:whiteops@127\.0\.0\.1:5432/whiteops', 'GRAPH_STORE_PG_URL=postgresql://whiteops_graph_store:whiteops_graph_store@127.0.0.1:5433/whiteops_graph_store'; " ^
+    "$utf8NoBom=New-Object System.Text.UTF8Encoding($false); [System.IO.File]::WriteAllText($path, $content, $utf8NoBom)"
+
   findstr /B /C:"GRAPH_STORE_PG_URL=" "%ROOT%services\orchestrator\.env" >nul
   if errorlevel 1 (
-    >>"%ROOT%services\orchestrator\.env" echo GRAPH_STORE_PG_URL=postgresql://whiteops:whiteops@127.0.0.1:5432/whiteops
+    >>"%ROOT%services\orchestrator\.env" echo GRAPH_STORE_PG_URL=postgresql://whiteops_graph_store:whiteops_graph_store@127.0.0.1:5433/whiteops_graph_store
     echo [WhiteOps] Added GRAPH_STORE_PG_URL to services\orchestrator\.env
   )
 
@@ -84,8 +90,9 @@ set "BRIDGE_HEALTH_URL=http://127.0.0.1:7071/health"
 set "ORCH_HEALTH_URL=http://127.0.0.1:7081/health"
 set "MAX_HEALTH_RETRIES=30"
 set "DOCKER_COMPOSE_FILE=%ROOT%docker-compose.yml"
-set "POSTGRES_CONTAINER=whiteops-postgres"
-set "POSTGRES_VOLUME=whiteops_postgres_data"
+set "POSTGRES_SERVICE=graph_store_postgres"
+set "POSTGRES_CONTAINER=whiteops-graph-store-postgres"
+set "POSTGRES_VOLUME=whiteops_graph_store_postgres_data"
 
 if "%CLEAN_MODE%"=="1" (
   call :clean_existing
@@ -152,12 +159,11 @@ if errorlevel 1 (
   exit /b 0
 )
 
-echo [WhiteOps] Resetting old docker state (container + volume)...
-docker compose -f "%DOCKER_COMPOSE_FILE%" down --remove-orphans --volumes >nul 2>nul
-if errorlevel 1 (
-  docker rm -f "%POSTGRES_CONTAINER%" >nul 2>nul
-  docker volume rm "%POSTGRES_VOLUME%" >nul 2>nul
-)
+echo [WhiteOps] Resetting old graph-store postgres container and volume...
+docker compose -f "%DOCKER_COMPOSE_FILE%" stop "%POSTGRES_SERVICE%" >nul 2>nul
+docker compose -f "%DOCKER_COMPOSE_FILE%" rm -f -s -v "%POSTGRES_SERVICE%" >nul 2>nul
+docker rm -f "%POSTGRES_CONTAINER%" >nul 2>nul
+docker volume rm "%POSTGRES_VOLUME%" >nul 2>nul
 exit /b 0
 
 :start_postgres
@@ -172,17 +178,17 @@ if errorlevel 1 (
   exit /b 0
 )
 
-docker compose -f "%DOCKER_COMPOSE_FILE%" up -d postgres >nul 2>nul
+docker compose -f "%DOCKER_COMPOSE_FILE%" up -d "%POSTGRES_SERVICE%" >nul 2>nul
 if errorlevel 1 (
-  echo [WhiteOps] WARNING: failed to start postgres container via docker compose.
+  echo [WhiteOps] WARNING: failed to start graph-store postgres container via docker compose.
   exit /b 0
 )
 
 call :wait_postgres_health "%POSTGRES_CONTAINER%" %MAX_HEALTH_RETRIES%
 if "%PG_OK%"=="1" (
-  echo [WhiteOps] postgres is healthy in docker.
+  echo [WhiteOps] graph-store postgres is healthy in docker.
 ) else (
-  echo [WhiteOps] WARNING: postgres did not become healthy in time.
+  echo [WhiteOps] WARNING: graph-store postgres did not become healthy in time.
 )
 exit /b 0
 

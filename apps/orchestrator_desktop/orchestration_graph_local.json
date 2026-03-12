@@ -1,54 +1,93 @@
 {
-  "savedAt": "2026-03-10T14:12:51.110597Z",
+  "savedAt": "2026-03-12T13:51:21.137941Z",
   "baseUrl": "http://127.0.0.1:7081",
+  "projectFilesPath": "C:\\project\\Test_prjkt",
   "graph": {
-    "graphId": "a4a2f45a-e8c4-410d-a5b7-e331c935259a",
-    "name": "Новая схема оркестрации",
+    "graphId": "300dade9-316f-4f3c-bd74-d38c76395cdf",
+    "name": "новая схема 4",
     "description": "",
-    "revision": 1,
+    "revision": 7,
     "nodes": [
       {
-        "id": "node-1773151916603282-df7061ad",
+        "id": "node-1773319403852462-be572bb4",
         "type": "manager",
         "label": "Менеджер Codex",
         "position": {
-          "x": 360.0,
-          "y": 240.0
+          "x": 768.0,
+          "y": 600.0
         },
         "config": {
           "agentId": "codex",
           "role": "manager",
+          "fullAccess": false,
+          "cwd": "C:\\project\\Test_prjkt",
           "timeoutMs": 90000,
           "retryDelayMs": 1000
         }
       },
       {
-        "id": "node-1773151919504663-bc6128f1",
-        "type": "worker",
-        "label": "Воркер Qwen",
+        "id": "node-1773319405049319-62428fa8",
+        "type": "manager",
+        "label": "Менеджер Codex 2",
         "position": {
-          "x": 792.0,
-          "y": 216.0
+          "x": 456.0,
+          "y": 768.0
         },
         "config": {
-          "agentId": "qwen",
-          "role": "worker",
-          "timeoutMs": 120000,
-          "maxRetries": 1,
-          "retryDelayMs": 1500
+          "agentId": "codex",
+          "role": "manager",
+          "fullAccess": false,
+          "cwd": "C:\\project\\Test_prjkt",
+          "timeoutMs": 90000,
+          "retryDelayMs": 1000
         }
       },
       {
-        "id": "node-1773151920957508-d42cfe28",
-        "type": "worker",
-        "label": "Воркер Qwen 2",
+        "id": "node-1773319467592557-9411c2bb",
+        "type": "manager",
+        "label": "Менеджер Codex 3",
         "position": {
-          "x": 624.0,
-          "y": 432.0
+          "x": 912.0,
+          "y": 792.0
+        },
+        "config": {
+          "agentId": "codex",
+          "role": "manager",
+          "fullAccess": false,
+          "cwd": "C:\\project\\Test_prjkt",
+          "timeoutMs": 90000,
+          "retryDelayMs": 1000
+        }
+      },
+      {
+        "id": "node-1773323465686142-bc6fd22d",
+        "type": "manager",
+        "label": "Менеджер Codex 4",
+        "position": {
+          "x": 648.0,
+          "y": 912.0
+        },
+        "config": {
+          "agentId": "codex",
+          "role": "manager",
+          "fullAccess": false,
+          "timeoutMs": 90000,
+          "retryDelayMs": 1000
+        }
+      },
+      {
+        "id": "node-1773323467316348-0b58aa42",
+        "type": "worker",
+        "label": "Воркер Qwen",
+        "position": {
+          "x": 912.0,
+          "y": 1032.0
         },
         "config": {
           "agentId": "qwen",
           "role": "worker",
+          "fullAccess": false,
+          "feedbackToManagerEnabled": true,
           "timeoutMs": 120000,
           "maxRetries": 1,
           "retryDelayMs": 1500
@@ -57,15 +96,27 @@
     ],
     "edges": [
       {
-        "id": "edge-1773151922573849-73b36a6a",
-        "fromNodeId": "node-1773151916603282-df7061ad",
-        "toNodeId": "node-1773151920957508-d42cfe28",
+        "id": "edge-1773319407174941-183c8e63",
+        "fromNodeId": "node-1773319403852462-be572bb4",
+        "toNodeId": "node-1773319405049319-62428fa8",
         "relationType": "manager_to_worker"
       },
       {
-        "id": "edge-1773151936840547-095c7524",
-        "fromNodeId": "node-1773151916603282-df7061ad",
-        "toNodeId": "node-1773151919504663-bc6128f1",
+        "id": "edge-1773319471170920-900f91ae",
+        "fromNodeId": "node-1773319403852462-be572bb4",
+        "toNodeId": "node-1773319467592557-9411c2bb",
+        "relationType": "manager_to_worker"
+      },
+      {
+        "id": "edge-1773323472197345-dfc26d7e",
+        "fromNodeId": "node-1773319405049319-62428fa8",
+        "toNodeId": "node-1773323465686142-bc6fd22d",
+        "relationType": "manager_to_worker"
+      },
+      {
+        "id": "edge-1773323474988445-f7c37155",
+        "fromNodeId": "node-1773323465686142-bc6fd22d",
+        "toNodeId": "node-1773323467316348-0b58aa42",
         "relationType": "manager_to_worker"
       }
     ]

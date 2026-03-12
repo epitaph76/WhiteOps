@@ -1,21 +1,21 @@
 services:
-  postgres:
+  graph_store_postgres:
     image: postgres:16-alpine
-    container_name: whiteops-postgres
+    container_name: whiteops-graph-store-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: whiteops
-      POSTGRES_USER: whiteops
-      POSTGRES_PASSWORD: whiteops
+      POSTGRES_DB: whiteops_graph_store
+      POSTGRES_USER: whiteops_graph_store
+      POSTGRES_PASSWORD: whiteops_graph_store
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - whiteops_postgres_data:/var/lib/postgresql/data
+      - whiteops_graph_store_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U whiteops -d whiteops"]
+      test: ["CMD-SHELL", "pg_isready -U whiteops_graph_store -d whiteops_graph_store"]
       interval: 5s
       timeout: 5s
       retries: 20
 
 volumes:
-  whiteops_postgres_data:
+  whiteops_graph_store_postgres_data:

@@ -41,6 +41,7 @@ class GraphEditorController extends ChangeNotifier {
   static const double _defaultNodeWidth = 220;
   static const double _defaultNodeHeight = 140;
   static const String localDraftFileName = 'orchestration_graph_local.json';
+  static const String localSavedGraphsFileName = 'orchestration_graphs_local.json';
 
   final Random _random = Random();
 
@@ -70,6 +71,7 @@ class GraphEditorController extends ChangeNotifier {
   String graphDescription = '';
   String projectFilesPath = '';
   String? activeGraphId;
+  String? activeLocalGraphId;
   int graphRevision = 1;
 
   List<GraphNodeModel> nodes = const [];
@@ -82,6 +84,7 @@ class GraphEditorController extends ChangeNotifier {
   bool snapToGrid = true;
 
   List<OrchestrationGraphModel> availableGraphs = const [];
+  List<LocalSavedGraphModel> localSavedGraphs = const [];
   List<GraphRunModel> availableRuns = const [];
   GraphRunModel? activeRun;
 
@@ -151,6 +154,7 @@ class GraphEditorController extends ChangeNotifier {
     try {
       await refreshHealth(showLoading: false);
       await refreshGraphs(showLoading: false);
+      await refreshLocalSavedGraphs(showLoading: false);
 
       if (availableGraphs.isNotEmpty) {
         await loadGraph(availableGraphs.first.id);
@@ -196,6 +200,7 @@ class GraphEditorController extends ChangeNotifier {
 
       health = nextHealth;
       availableGraphs = nextGraphs;
+      await refreshLocalSavedGraphs(showLoading: false);
       availableRuns = const [];
       activeRun = null;
       runStreamConnected = false;
@@ -271,6 +276,71 @@ class GraphEditorController extends ChangeNotifier {
     }
   }
 
+  Future<void> refreshLocalSavedGraphs({bool showLoading = true}) async {
+    if (_disposed) {
+      return;
+    }
+
+    if (showLoading) {
+      loadingGraphs = true;
+      notifyListeners();
+    }
+
+    try {
+      final file = File(_localSavedGraphsPath());
+      if (!await file.exists()) {
+        final legacy = await _readLegacyLocalDraftAsSavedGraph();
+        if (legacy != null) {
+          localSavedGraphs = [legacy];
+          await _writeLocalSavedGraphs(localSavedGraphs);
+        } else {
+          localSavedGraphs = const [];
+        }
+        return;
+      }
+
+      final raw = await file.readAsString();
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        localSavedGraphs = const [];
+        return;
+      }
+
+      final itemsRaw = decoded['items'];
+      if (itemsRaw is! List) {
+        localSavedGraphs = const [];
+        return;
+      }
+
+      final items = <LocalSavedGraphModel>[];
+      for (final item in itemsRaw) {
+        if (item is! Map) {
+          continue;
+        }
+        items.add(
+          LocalSavedGraphModel.fromJson(
+            item.map((key, value) => MapEntry('$key', value)),
+          ),
+        );
+      }
+
+      items.sort(
+        (left, right) =>
+            (right.savedAt ?? DateTime(1970)).compareTo(
+              left.savedAt ?? DateTime(1970),
+            ),
+      );
+      localSavedGraphs = items;
+    } catch (error) {
+      _setError('Failed to load local graphs list: $error');
+    } finally {
+      if (!_disposed) {
+        loadingGraphs = false;
+        notifyListeners();
+      }
+    }
+  }
+
   Future<void> refreshRuns({bool showLoading = true}) async {
     if (_disposed || activeGraphId == null) {
       return;
@@ -324,6 +394,7 @@ class GraphEditorController extends ChangeNotifier {
 
   void _applyGraph(OrchestrationGraphModel graph) {
     activeGraphId = graph.id;
+    activeLocalGraphId = null;
     graphName = graph.name;
     graphDescription = graph.description ?? '';
     graphRevision = graph.revision.revision;
@@ -337,6 +408,60 @@ class GraphEditorController extends ChangeNotifier {
     nodeMessages.clear();
     nodeLogs.clear();
     runStreamConnected = false;
+    notifyListeners();
+  }
+
+  void _applyLocalSavedGraph(LocalSavedGraphModel graph) {
+    activeGraphId = null;
+    activeLocalGraphId = graph.id;
+    graphName = graph.name;
+    graphDescription = graph.description ?? '';
+    graphRevision = 1;
+    nodes = graph.nodes;
+    edges = graph.edges;
+    projectFilesPath = graph.projectFilesPath ?? '';
+    if (projectFilesPath.trim().isEmpty) {
+      _syncProjectPathFromNodesIfUniform();
+    }
+    selectedNodeIds.clear();
+    selectedEdgeId = null;
+    activeRun = null;
+    availableRuns = const [];
+    nodeMessages.clear();
+    nodeLogs.clear();
+    runStreamConnected = false;
+    notifyListeners();
+  }
+
+  Future<void> loadLocalSavedGraph(String localGraphId) async {
+    if (_disposed) {
+      return;
+    }
+
+    final graph = localSavedGraphs
+        .where((item) => item.id == localGraphId)
+        .firstOrNull;
+    if (graph == null) {
+      _setError('Local graph $localGraphId not found');
+      return;
+    }
+
+    _applyLocalSavedGraph(graph);
+    clearInfo();
+  }
+
+  Future<void> deleteLocalSavedGraph(String localGraphId) async {
+    final nextItems = localSavedGraphs
+        .where((item) => item.id != localGraphId)
+        .toList(growable: false);
+    await _writeLocalSavedGraphs(nextItems);
+    localSavedGraphs = nextItems;
+
+    if (activeLocalGraphId == localGraphId) {
+      activeLocalGraphId = null;
+    }
+
+    infoMessage = 'Local graph deleted.';
     notifyListeners();
   }
 
@@ -1277,34 +1402,76 @@ class GraphEditorController extends ChangeNotifier {
   }
 
   Future<void> saveLocalDraft() async {
-    final payload = {
-      'savedAt': DateTime.now().toUtc().toIso8601String(),
-      'baseUrl': baseUrl,
-      'projectFilesPath': projectFilesPath,
-      'graph': {
-        'graphId': activeGraphId,
-        'name': graphName,
-        'description': graphDescription,
-        'revision': graphRevision,
-        'nodes': nodes.map((node) => node.toJson()).toList(growable: false),
-        'edges': edges.map((edge) => edge.toJson()).toList(growable: false),
-      },
-    };
-
     try {
+      final now = DateTime.now().toUtc();
+      final localId = activeLocalGraphId ?? _newId('local-graph');
+      final entry = LocalSavedGraphModel(
+        id: localId,
+        name: graphName.trim().isEmpty ? 'Local graph' : graphName.trim(),
+        description: graphDescription.trim().isEmpty
+            ? null
+            : graphDescription.trim(),
+        projectFilesPath: projectFilesPath.trim().isEmpty
+            ? null
+            : projectFilesPath.trim(),
+        savedAt: now,
+        nodes: nodes,
+        edges: edges,
+      );
+
+      final mutable = List<LocalSavedGraphModel>.from(localSavedGraphs);
+      final index = mutable.indexWhere((item) => item.id == localId);
+      if (index >= 0) {
+        mutable[index] = entry;
+      } else {
+        mutable.add(entry);
+      }
+
+      mutable.sort(
+        (left, right) =>
+            (right.savedAt ?? DateTime(1970)).compareTo(
+              left.savedAt ?? DateTime(1970),
+            ),
+      );
+
+      await _writeLocalSavedGraphs(mutable);
+      localSavedGraphs = mutable;
+      activeLocalGraphId = localId;
+
+      final payload = {
+        'savedAt': now.toIso8601String(),
+        'baseUrl': baseUrl,
+        'projectFilesPath': projectFilesPath,
+        'graph': {
+          'graphId': activeGraphId,
+          'name': graphName,
+          'description': graphDescription,
+          'revision': graphRevision,
+          'nodes': nodes.map((node) => node.toJson()).toList(growable: false),
+          'edges': edges.map((edge) => edge.toJson()).toList(growable: false),
+        },
+      };
+
       final file = File(_localDraftPath());
       await file.writeAsString(
         const JsonEncoder.withIndent('  ').convert(payload),
       );
-      infoMessage = 'Локальный черновик сохранен: ${file.path}';
+      infoMessage = 'Local graph saved.';
       notifyListeners();
     } catch (error) {
-      _setError('Не удалось сохранить локальный черновик: $error');
+      _setError('Failed to save local graph: $error');
     }
   }
 
   Future<void> loadLocalDraft() async {
     try {
+      if (localSavedGraphs.isNotEmpty) {
+        _applyLocalSavedGraph(localSavedGraphs.first);
+        infoMessage = 'Local graph loaded from saved list.';
+        notifyListeners();
+        return;
+      }
+
       final file = File(_localDraftPath());
       if (!await file.exists()) {
         _setError('Локальный черновик не найден: ${file.path}');
@@ -1331,6 +1498,7 @@ class GraphEditorController extends ChangeNotifier {
       graphDescription = _readString(graphMap['description']) ?? '';
       graphRevision = 1;
       activeGraphId = null;
+      activeLocalGraphId = null;
 
       final loadedNodes = <GraphNodeModel>[];
       final nodeList = graphMap['nodes'];
@@ -1384,6 +1552,82 @@ class GraphEditorController extends ChangeNotifier {
     return '${Directory.current.path}${Platform.pathSeparator}$localDraftFileName';
   }
 
+  String _localSavedGraphsPath() {
+    return '${Directory.current.path}${Platform.pathSeparator}$localSavedGraphsFileName';
+  }
+
+  Future<void> _writeLocalSavedGraphs(List<LocalSavedGraphModel> items) async {
+    final payload = {
+      'savedAt': DateTime.now().toUtc().toIso8601String(),
+      'version': 1,
+      'items': items.map((item) => item.toJson()).toList(growable: false),
+    };
+    final file = File(_localSavedGraphsPath());
+    await file.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(payload),
+    );
+  }
+
+  Future<LocalSavedGraphModel?> _readLegacyLocalDraftAsSavedGraph() async {
+    try {
+      final file = File(_localDraftPath());
+      if (!await file.exists()) {
+        return null;
+      }
+
+      final raw = await file.readAsString();
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return null;
+      }
+
+      final graphRaw = decoded['graph'];
+      if (graphRaw is! Map) {
+        return null;
+      }
+      final graphMap = graphRaw.map((key, value) => MapEntry('$key', value));
+
+      final loadedNodes = <GraphNodeModel>[];
+      final nodeList = graphMap['nodes'];
+      if (nodeList is List) {
+        for (final item in nodeList) {
+          if (item is Map) {
+            loadedNodes.add(
+              GraphNodeModel.fromJson(
+                item.map((key, value) => MapEntry('$key', value)),
+              ),
+            );
+          }
+        }
+      }
+
+      final loadedEdges = <GraphEdgeModel>[];
+      final edgeList = graphMap['edges'];
+      if (edgeList is List) {
+        for (final item in edgeList) {
+          if (item is Map) {
+            loadedEdges.add(
+              GraphEdgeModel.fromJson(
+                item.map((key, value) => MapEntry('$key', value)),
+              ),
+            );
+          }
+        }
+      }
+
+      return LocalSavedGraphModel(
+        id: _newId('local-graph'),
+        name: _readString(graphMap['name']) ?? 'Local graph',
+        description: _readString(graphMap['description']),
+        projectFilesPath: _readString(decoded['projectFilesPath']),
+        savedAt: DateTime.now().toUtc(),
+        nodes: loadedNodes,
+        edges: loadedEdges,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
   GraphNodeModel? get selectedSingleNode {
     if (selectedNodeIds.length != 1) {
       return null;
@@ -1429,6 +1673,7 @@ class GraphEditorController extends ChangeNotifier {
     graphDescription = '';
     projectFilesPath = '';
     activeGraphId = null;
+    activeLocalGraphId = null;
     graphRevision = 1;
     nodes = const [];
     edges = const [];
@@ -1713,3 +1958,5 @@ extension _IterableNullable<T> on Iterable<T> {
     return first;
   }
 }
+
+

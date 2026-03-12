@@ -422,6 +422,72 @@ class GraphUpsertRequest {
   }
 }
 
+class LocalSavedGraphModel {
+  const LocalSavedGraphModel({
+    required this.id,
+    required this.name,
+    this.description,
+    this.projectFilesPath,
+    required this.savedAt,
+    required this.nodes,
+    required this.edges,
+  });
+
+  final String id;
+  final String name;
+  final String? description;
+  final String? projectFilesPath;
+  final DateTime? savedAt;
+  final List<GraphNodeModel> nodes;
+  final List<GraphEdgeModel> edges;
+
+  factory LocalSavedGraphModel.fromJson(Map<String, dynamic> json) {
+    final nodeItems = <GraphNodeModel>[];
+    for (final raw in _asList(json['nodes'])) {
+      final map = _asMap(raw);
+      if (map != null) {
+        nodeItems.add(GraphNodeModel.fromJson(map));
+      }
+    }
+
+    final edgeItems = <GraphEdgeModel>[];
+    for (final raw in _asList(json['edges'])) {
+      final map = _asMap(raw);
+      if (map != null) {
+        edgeItems.add(GraphEdgeModel.fromJson(map));
+      }
+    }
+
+    return LocalSavedGraphModel(
+      id: _asString(json['id']),
+      name: _asString(json['name'], fallback: 'Local graph'),
+      description: _asString(json['description']).trim().isEmpty
+          ? null
+          : _asString(json['description']).trim(),
+      projectFilesPath: _asString(json['projectFilesPath']).trim().isEmpty
+          ? null
+          : _asString(json['projectFilesPath']).trim(),
+      savedAt: _parseDateTime(json['savedAt']),
+      nodes: nodeItems,
+      edges: edgeItems,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      if (description != null && description!.trim().isNotEmpty)
+        'description': description!.trim(),
+      if (projectFilesPath != null && projectFilesPath!.trim().isNotEmpty)
+        'projectFilesPath': projectFilesPath!.trim(),
+      if (savedAt != null) 'savedAt': savedAt!.toUtc().toIso8601String(),
+      'nodes': nodes.map((node) => node.toJson()).toList(growable: false),
+      'edges': edges.map((edge) => edge.toJson()).toList(growable: false),
+    };
+  }
+}
+
 class GraphRunNodeStateModel {
   const GraphRunNodeStateModel({
     required this.nodeId,
