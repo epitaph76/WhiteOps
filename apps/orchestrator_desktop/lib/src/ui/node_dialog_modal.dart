@@ -1,9 +1,10 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
 import '../models/graph_editor_models.dart';
 import '../state/graph_editor_controller.dart';
+import 'make_tokens.dart';
 
 class NodeDialogModal extends StatefulWidget {
   const NodeDialogModal({
@@ -49,18 +50,25 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
             .firstOrNull;
         final effectiveNode = liveNode ?? widget.node;
         _syncCwdField(effectiveNode);
-        final fullAccess = liveNode?.config.fullAccess ?? widget.node.config.fullAccess;
+        final fullAccess =
+            liveNode?.config.fullAccess ?? widget.node.config.fullAccess;
         final messages =
             widget.controller.nodeMessages[widget.node.id] ??
             const <NodeChatMessageModel>[];
         final logs =
             widget.controller.nodeLogs[widget.node.id] ??
             const <NodeLogEntryModel>[];
-        final nodeState = widget.controller.activeRun?.nodeStates[widget.node.id];
+        final nodeState =
+            widget.controller.activeRun?.nodeStates[widget.node.id];
         final isManagerNode =
-            effectiveNode.type == 'manager' || effectiveNode.config.role == 'manager';
+            effectiveNode.type == 'manager' ||
+            effectiveNode.config.role == 'manager';
+        final isWorkerOrAgentNode = !isManagerNode &&
+            (effectiveNode.type == 'worker' || effectiveNode.type == 'agent');
+        final feedbackToManagerEnabled =
+            effectiveNode.config.feedbackToManagerEnabled != false;
 
-        return Padding(
+        return GlassCard(
           padding: const EdgeInsets.all(14),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -92,11 +100,14 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
               const SizedBox(height: 8),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF2F7FC),
+                  color: Colors.white.withValues(alpha: 0.7),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFD7E3F1)),
+                  border: Border.all(color: MakeTokens.border),
                 ),
                 child: Row(
                   children: [
@@ -122,11 +133,14 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
               const SizedBox(height: 8),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF2F7FC),
+                  color: Colors.white.withValues(alpha: 0.7),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFD7E3F1)),
+                  border: Border.all(color: MakeTokens.border),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -170,6 +184,41 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
                 ),
               ),
               const SizedBox(height: 8),
+              if (isWorkerOrAgentNode) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: MakeTokens.border),
+                  ),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Send feedback to manager',
+                          style: TextStyle(fontSize: 12.5),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Switch(
+                        value: feedbackToManagerEnabled,
+                        onChanged: (value) {
+                          widget.controller.updateNode(
+                            widget.node.id,
+                            feedbackToManagerEnabled: value,
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               Expanded(
                 child: Row(
                   children: [
@@ -287,7 +336,9 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
                                 'Статус: ${nodeExecutionStatusLabel(nodeState?.status ?? 'pending')}',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: _statusColor(nodeState?.status ?? 'pending'),
+                                  color: _statusColor(
+                                    nodeState?.status ?? 'pending',
+                                  ),
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -298,7 +349,9 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
                                   ? const Center(
                                       child: Text(
                                         'Логов пока нет.',
-                                        style: TextStyle(color: Color(0xFF5D7088)),
+                                        style: TextStyle(
+                                          color: Color(0xFF5D7088),
+                                        ),
                                       ),
                                     )
                                   : SelectionArea(
@@ -380,9 +433,9 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFFFBFDFF),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFD4E2F0)),
+        color: Colors.white.withValues(alpha: 0.78),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: MakeTokens.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -416,7 +469,10 @@ class _NodeDialogModalState extends State<NodeDialogModal> {
 
   Future<void> _sendMessage() async {
     final message = _messageController.text;
-    final sent = await widget.controller.sendMessageToNode(widget.node.id, message);
+    final sent = await widget.controller.sendMessageToNode(
+      widget.node.id,
+      message,
+    );
     if (!mounted) {
       return;
     }

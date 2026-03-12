@@ -63,6 +63,7 @@ class GraphNodeConfigModel {
     required this.agentId,
     required this.role,
     this.fullAccess = false,
+    this.feedbackToManagerEnabled,
     this.prompt,
     this.cwd,
     this.timeoutMs,
@@ -74,6 +75,7 @@ class GraphNodeConfigModel {
   final String agentId;
   final String role;
   final bool fullAccess;
+  final bool? feedbackToManagerEnabled;
   final String? prompt;
   final String? cwd;
   final int? timeoutMs;
@@ -86,6 +88,9 @@ class GraphNodeConfigModel {
       agentId: _asString(json['agentId'], fallback: 'qwen'),
       role: _asString(json['role'], fallback: 'worker'),
       fullAccess: _asBool(json['fullAccess']),
+      feedbackToManagerEnabled: json['feedbackToManagerEnabled'] == null
+          ? null
+          : _asBool(json['feedbackToManagerEnabled']),
       prompt: _asString(json['prompt']).trim().isEmpty
           ? null
           : _asString(json['prompt']).trim(),
@@ -107,6 +112,8 @@ class GraphNodeConfigModel {
     String? agentId,
     String? role,
     bool? fullAccess,
+    bool? feedbackToManagerEnabled,
+    bool clearFeedbackToManagerEnabled = false,
     String? prompt,
     bool clearPrompt = false,
     String? cwd,
@@ -124,6 +131,9 @@ class GraphNodeConfigModel {
       agentId: agentId ?? this.agentId,
       role: role ?? this.role,
       fullAccess: fullAccess ?? this.fullAccess,
+      feedbackToManagerEnabled: clearFeedbackToManagerEnabled
+          ? null
+          : (feedbackToManagerEnabled ?? this.feedbackToManagerEnabled),
       prompt: clearPrompt ? null : (prompt ?? this.prompt),
       cwd: clearCwd ? null : (cwd ?? this.cwd),
       timeoutMs: clearTimeoutMs ? null : (timeoutMs ?? this.timeoutMs),
@@ -140,6 +150,8 @@ class GraphNodeConfigModel {
       'agentId': agentId,
       'role': role,
       'fullAccess': fullAccess,
+      if (feedbackToManagerEnabled != null)
+        'feedbackToManagerEnabled': feedbackToManagerEnabled,
       if (prompt != null && prompt!.trim().isNotEmpty) 'prompt': prompt!.trim(),
       if (cwd != null && cwd!.trim().isNotEmpty) 'cwd': cwd!.trim(),
       if (timeoutMs != null) 'timeoutMs': timeoutMs,

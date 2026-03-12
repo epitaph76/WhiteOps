@@ -116,6 +116,7 @@ class GraphEditorController extends ChangeNotifier {
         defaultConfig: GraphNodeConfigModel(
           agentId: 'qwen',
           role: 'worker',
+          feedbackToManagerEnabled: true,
           timeoutMs: 120000,
           maxRetries: 1,
           retryDelayMs: 1500,
@@ -129,6 +130,7 @@ class GraphEditorController extends ChangeNotifier {
         defaultConfig: GraphNodeConfigModel(
           agentId: 'qwen',
           role: 'worker',
+          feedbackToManagerEnabled: true,
           timeoutMs: 120000,
           maxRetries: 0,
           retryDelayMs: 1000,
@@ -399,6 +401,104 @@ class GraphEditorController extends ChangeNotifier {
     addNodeFromTemplate(template, last.x + offsetX, last.y + offsetY);
   }
 
+  void addConfiguredAgentNode({
+    required String modelId,
+    required String role,
+    String? customSystemPrompt,
+  }) {
+    final normalizedModel = modelId == 'codex' ? 'codex' : 'qwen';
+    final normalizedRole = switch (role) {
+      'manager' => 'manager',
+      'reviewer' => 'reviewer',
+      _ => 'worker',
+    };
+
+    final runtimeRole = normalizedRole == 'manager' ? 'manager' : 'worker';
+    final nodeType = normalizedRole == 'manager' ? 'manager' : 'agent';
+    final timeoutMs = normalizedRole == 'manager' ? 90000 : 120000;
+    final maxRetries = normalizedRole == 'manager' ? 0 : 1;
+    final modelLabel = normalizedModel == 'codex' ? 'Codex' : 'Qwen';
+    final roleLabel = switch (normalizedRole) {
+      'manager' => 'Менеджер',
+      'reviewer' => 'Ревьюер',
+      _ => 'Воркер',
+    };
+
+    final metadata = normalizedRole == 'reviewer'
+        ? <String, dynamic>{'personaRole': 'reviewer'}
+        : null;
+
+    final template = PaletteNodeTemplate(
+      key: 'custom-$normalizedModel-$normalizedRole',
+      title: '$roleLabel $modelLabel',
+      subtitle: 'Пользовательская модель агента',
+      nodeType: nodeType,
+      defaultConfig: GraphNodeConfigModel(
+        agentId: normalizedModel,
+        role: runtimeRole,
+        feedbackToManagerEnabled: normalizedRole == 'manager' ? null : true,
+        prompt: _buildComposedSystemPrompt(
+          modelId: normalizedModel,
+          role: normalizedRole,
+          customPart: customSystemPrompt,
+        ),
+        timeoutMs: timeoutMs,
+        maxRetries: maxRetries,
+        retryDelayMs: 1000,
+        metadata: metadata,
+      ),
+    );
+
+    addNodeFromTemplateAuto(template);
+  }
+
+  String _buildComposedSystemPrompt({
+    required String modelId,
+    required String role,
+    String? customPart,
+  }) {
+    const basePrompt = '''
+Ты работаешь как агент в мультиагентной системе разработки.
+Работай только в назначенной рабочей директории (cwd).
+Не создавай и не изменяй файлы вне cwd.
+Формулируй действия и результат ясно и по шагам.
+''';
+
+    final modelPrompt = switch (modelId) {
+      'codex' => '''
+Модель: Codex.
+Делай точные изменения кода, давай конкретные правки и проверяемый результат.
+''',
+      _ => '''
+Модель: Qwen.
+Фокус на стабильной реализации и аккуратной проверке результата.
+''',
+    };
+
+    final rolePrompt = switch (role) {
+      'manager' => '''
+Роль: менеджер.
+Декомпозируй задачу, распределяй подзадачи и собирай итог от подчиненных.
+''',
+      'reviewer' => '''
+Роль: ревьюер.
+Проверяй качество изменений, ищи риски и предлагай корректировки.
+''',
+      _ => '''
+Роль: воркер.
+Выполняй назначенную подзадачу, не выходя за ее границы.
+''',
+    };
+
+    final parts = <String>[basePrompt.trim(), modelPrompt.trim(), rolePrompt.trim()];
+    final custom = customPart?.trim();
+    if (custom != null && custom.isNotEmpty) {
+      parts.add(custom);
+    }
+
+    return parts.join('\n\n');
+  }
+
   void selectNode(String nodeId, {bool additive = false, bool toggle = false}) {
     selectedEdgeId = null;
 
@@ -488,6 +588,8 @@ class GraphEditorController extends ChangeNotifier {
     String? agentId,
     String? role,
     bool? fullAccess,
+    bool? feedbackToManagerEnabled,
+    bool clearFeedbackToManagerEnabled = false,
     String? cwd,
     bool clearCwd = false,
     String? prompt,
@@ -513,6 +615,8 @@ class GraphEditorController extends ChangeNotifier {
             agentId: agentId,
             role: role,
             fullAccess: fullAccess,
+            feedbackToManagerEnabled: feedbackToManagerEnabled,
+            clearFeedbackToManagerEnabled: clearFeedbackToManagerEnabled,
             cwd: cwd,
             clearCwd: clearCwd,
             prompt: prompt,
@@ -997,6 +1101,38 @@ class GraphEditorController extends ChangeNotifier {
       }
       existing.sort((a, b) => a.sequence.compareTo(b.sequence));
       nodeLogs[eventNodeId] = existing;
+    }
+
+    if (streamed.event.type == 'node_message' && eventNodeId != null) {
+      final messageId = _readString(data['messageId']);
+      final role = _readString(data['role']);
+      final text = _readString(data['text']);
+      final createdAt = _readString(data['createdAt']);
+
+      if (messageId != null && role != null && text != null) {
+        final existing = List<NodeChatMessageModel>.from(
+          nodeMessages[eventNodeId] ?? const [],
+        );
+        if (!existing.any((entry) => entry.id == messageId)) {
+          existing.add(
+            NodeChatMessageModel.fromJson({
+              'id': messageId,
+              'graphId': streamed.event.graphId,
+              'nodeId': eventNodeId,
+              'runId': streamed.runId,
+              'role': role,
+              'text': text,
+              'createdAt': createdAt ?? streamed.event.at?.toIso8601String(),
+            }),
+          );
+        }
+        existing.sort(
+          (left, right) => (left.createdAt ?? DateTime(1970)).compareTo(
+            right.createdAt ?? DateTime(1970),
+          ),
+        );
+        nodeMessages[eventNodeId] = existing;
+      }
     }
 
     final updated = current.copyWith(

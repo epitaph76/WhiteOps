@@ -12,6 +12,7 @@ export interface GraphNodeConfig {
   agentId: AgentId;
   role: "manager" | "worker";
   fullAccess?: boolean;
+  feedbackToManagerEnabled?: boolean;
   prompt?: string;
   cwd?: string;
   timeoutMs?: number;
@@ -107,6 +108,7 @@ export type GraphRealtimeEventType =
   | "graph_run_started"
   | "graph_run_resumed"
   | "node_status_changed"
+  | "node_message"
   | "node_log_chunk"
   | "node_result_ready"
   | "graph_run_finished";

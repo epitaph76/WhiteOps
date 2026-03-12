@@ -196,6 +196,10 @@ function parseGraphUpsertInput(body: JsonObject): GraphUpsertInput {
               config.fullAccess,
               `nodes[${index}].config.fullAccess`,
             ),
+            feedbackToManagerEnabled: asOptionalBoolean(
+              config.feedbackToManagerEnabled,
+              `nodes[${index}].config.feedbackToManagerEnabled`,
+            ),
             prompt: asOptionalString(config.prompt, `nodes[${index}].config.prompt`),
             cwd: asOptionalString(config.cwd, `nodes[${index}].config.cwd`),
             timeoutMs: asOptionalNumber(config.timeoutMs, `nodes[${index}].config.timeoutMs`),

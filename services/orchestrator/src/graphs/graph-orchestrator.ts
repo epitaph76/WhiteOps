@@ -16,6 +16,15 @@ interface ParsedManagerAssignment {
   reason?: string;
 }
 
+interface RunStaticIndex {
+  nodeById: Map<string, GraphNode>;
+  outgoingEdgesByFromNodeId: Map<string, GraphEdge[]>;
+  managerToWorkerEdgesByManagerNodeId: Map<string, GraphEdge[]>;
+  managersByWorkerNodeId: Map<string, GraphNode[]>;
+  legacyFeedbackEdgesByManagerNodeId: Map<string, GraphEdge[]>;
+  legacyFeedbackManagersByWorkerNodeId: Map<string, GraphNode[]>;
+}
+
 const MAX_DEPENDENCY_OUTPUT = 4_000;
 
 function sleep(ms: number): Promise<void> {
@@ -306,10 +315,68 @@ function buildDependencyMap(nodes: GraphNode[], edges: GraphEdge[]): Map<string,
     if (edge.relationType === "feedback") {
       continue;
     }
-    map.set(edge.toNodeId, [...(map.get(edge.toNodeId) ?? []), edge.fromNodeId]);
+    const bucket = map.get(edge.toNodeId);
+    if (bucket) {
+      bucket.push(edge.fromNodeId);
+    } else {
+      map.set(edge.toNodeId, [edge.fromNodeId]);
+    }
   }
 
   return map;
+}
+
+function buildRunStaticIndex(nodes: GraphNode[], edges: GraphEdge[]): RunStaticIndex {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const outgoingEdgesByFromNodeId = new Map<string, GraphEdge[]>();
+  const managerToWorkerEdgesByManagerNodeId = new Map<string, GraphEdge[]>();
+  const managersByWorkerNodeId = new Map<string, GraphNode[]>();
+  const legacyFeedbackEdgesByManagerNodeId = new Map<string, GraphEdge[]>();
+  const legacyFeedbackManagersByWorkerNodeId = new Map<string, GraphNode[]>();
+
+  for (const edge of edges) {
+    const outgoing = outgoingEdgesByFromNodeId.get(edge.fromNodeId) ?? [];
+    outgoing.push(edge);
+    outgoingEdgesByFromNodeId.set(edge.fromNodeId, outgoing);
+
+    if (edge.relationType === "manager_to_worker") {
+      const managerNode = nodeById.get(edge.fromNodeId);
+      if (managerNode && isManagerNode(managerNode)) {
+        const managerEdges = managerToWorkerEdgesByManagerNodeId.get(edge.fromNodeId) ?? [];
+        managerEdges.push(edge);
+        managerToWorkerEdgesByManagerNodeId.set(edge.fromNodeId, managerEdges);
+
+        const managers = managersByWorkerNodeId.get(edge.toNodeId) ?? [];
+        managers.push(managerNode);
+        managersByWorkerNodeId.set(edge.toNodeId, managers);
+      }
+      continue;
+    }
+
+    if (edge.relationType === "feedback") {
+      const managerFeedback = legacyFeedbackEdgesByManagerNodeId.get(edge.toNodeId) ?? [];
+      managerFeedback.push(edge);
+      legacyFeedbackEdgesByManagerNodeId.set(edge.toNodeId, managerFeedback);
+
+      const managerNode = nodeById.get(edge.toNodeId);
+      if (!managerNode || !isManagerNode(managerNode)) {
+        continue;
+      }
+
+      const managers = legacyFeedbackManagersByWorkerNodeId.get(edge.fromNodeId) ?? [];
+      managers.push(managerNode);
+      legacyFeedbackManagersByWorkerNodeId.set(edge.fromNodeId, managers);
+    }
+  }
+
+  return {
+    nodeById,
+    outgoingEdgesByFromNodeId,
+    managerToWorkerEdgesByManagerNodeId,
+    managersByWorkerNodeId,
+    legacyFeedbackEdgesByManagerNodeId,
+    legacyFeedbackManagersByWorkerNodeId,
+  };
 }
 
 function isTerminal(status: GraphRun["nodeStates"][string]["status"]): boolean {
@@ -373,25 +440,25 @@ export class GraphOrchestrator {
 
     try {
       this.store.markRunStarted(runId);
-      const snapshot = this.store.getRunForExecution(runId);
+      const snapshot = this.store.getRunViewForExecution(runId);
       if (!snapshot) {
         return;
       }
 
       const dependencies = buildDependencyMap(snapshot.nodes, snapshot.edges);
+      const runIndex = buildRunStaticIndex(snapshot.nodes, snapshot.edges);
       for (const node of snapshot.nodes) {
         if ((dependencies.get(node.id) ?? []).length === 0) {
           this.store.setNodeStatus(runId, node.id, "ready");
         }
       }
 
-      const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
       const pending = new Set(snapshot.nodes.map((node) => node.id));
       const active = new Map<string, Promise<void>>();
 
       while (pending.size > 0 || active.size > 0) {
         if (this.store.isRunCancelRequested(runId)) {
-          const runState = this.store.getRunForExecution(runId);
+          const runState = this.store.getRunViewForExecution(runId);
           if (runState) {
             for (const nodeId of pending) {
               const state = runState.nodeStates[nodeId];
@@ -413,7 +480,7 @@ export class GraphOrchestrator {
           break;
         }
 
-        const current = this.store.getRunForExecution(runId);
+        const current = this.store.getRunViewForExecution(runId);
         if (!current) {
           break;
         }
@@ -448,7 +515,7 @@ export class GraphOrchestrator {
           }
         }
 
-        const refreshed = this.store.getRunForExecution(runId);
+        const refreshed = this.store.getRunViewForExecution(runId);
         if (!refreshed) {
           break;
         }
@@ -486,7 +553,7 @@ export class GraphOrchestrator {
             break;
           }
 
-          const node = nodeById.get(nodeId);
+          const node = runIndex.nodeById.get(nodeId);
           if (!node) {
             pending.delete(nodeId);
             continue;
@@ -499,7 +566,7 @@ export class GraphOrchestrator {
             });
           }
 
-          const job = this.executeNode(runId, node, dependencies.get(node.id) ?? []).finally(() => {
+          const job = this.executeNode(runId, node, dependencies.get(node.id) ?? [], runIndex).finally(() => {
             active.delete(node.id);
           });
           active.set(node.id, job);
@@ -510,7 +577,7 @@ export class GraphOrchestrator {
             break;
           }
 
-          const unresolved = this.store.getRunForExecution(runId);
+          const unresolved = this.store.getRunViewForExecution(runId);
           if (!unresolved) {
             break;
           }
@@ -532,7 +599,7 @@ export class GraphOrchestrator {
 
         await Promise.race([...active.values()]);
 
-        const postRace = this.store.getRunForExecution(runId);
+        const postRace = this.store.getRunViewForExecution(runId);
         if (!postRace) {
           break;
         }
@@ -545,7 +612,7 @@ export class GraphOrchestrator {
         }
       }
 
-      const finalSnapshot = this.store.getRunForExecution(runId);
+      const finalSnapshot = this.store.getRunViewForExecution(runId);
       if (!finalSnapshot) {
         return;
       }
@@ -569,8 +636,9 @@ export class GraphOrchestrator {
 
       this.store.markRunFinished(runId, finalStatus, finalError);
       this.publishRunSummaryToManagers(
-        this.store.getRunForExecution(runId) ?? finalSnapshot,
+        this.store.getRunViewForExecution(runId) ?? finalSnapshot,
         finalStatus,
+        runIndex,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Graph run failed";
@@ -580,12 +648,17 @@ export class GraphOrchestrator {
     }
   }
 
-  private async executeNode(runId: string, node: GraphNode, dependencyIds: string[]): Promise<void> {
+  private async executeNode(
+    runId: string,
+    node: GraphNode,
+    dependencyIds: string[],
+    runIndex: RunStaticIndex,
+  ): Promise<void> {
     const timeoutMsRaw = node.config.timeoutMs ?? this.options.defaultNodeTimeoutMs;
     const timeoutMs = Math.max(1, Math.min(timeoutMsRaw, this.options.maxNodeTimeoutMs));
     const maxRetries = Math.max(0, node.config.maxRetries ?? 0);
     const retryDelayMs = Math.max(1, node.config.retryDelayMs ?? 1_000);
-    const runSnapshot = this.store.getRunForExecution(runId);
+    const runSnapshot = this.store.getRunViewForExecution(runId);
     const runDefaultCwd = runSnapshot?.cwd?.trim() || undefined;
 
     for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
@@ -599,7 +672,7 @@ export class GraphOrchestrator {
         return;
       }
 
-      const prompt = this.buildPrompt(runId, node, dependencyIds);
+      const prompt = this.buildPrompt(runId, node, dependencyIds, runIndex);
       const attemptClaim = this.store.claimNodeAttempt(runId, node.id, attempt, attemptKey);
       if (!attemptClaim.isNewClaim) {
         const reused = attemptClaim.record;
@@ -623,15 +696,15 @@ export class GraphOrchestrator {
           this.store.setNodeResult(runId, node.id, reused.result, reused.artifacts);
 
           if (isManagerNode(node)) {
-            const currentRun = this.store.getRunForExecution(runId);
+            const currentRun = this.store.getRunViewForExecution(runId);
             const hasManagerTrace = Boolean(
               currentRun?.managerTrace.some((item) => item.managerNodeId === node.id),
             );
             if (!hasManagerTrace) {
-              this.createManagerTraceEntries(runId, node, reused.result);
+              this.createManagerTraceEntries(runId, node, reused.result, runIndex);
             }
           } else {
-            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "completed");
+            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "completed", runIndex);
           }
 
           return;
@@ -673,6 +746,7 @@ export class GraphOrchestrator {
               runId,
               node.id,
               this.store.isRunCancelRequested(runId) ? "canceled" : "failed",
+              runIndex,
             );
           }
           return;
@@ -693,7 +767,7 @@ export class GraphOrchestrator {
             lastError: message,
           });
           if (!isManagerNode(node)) {
-            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "canceled");
+            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "canceled", runIndex);
           }
           return;
         }
@@ -755,7 +829,7 @@ export class GraphOrchestrator {
             lastError: timeoutError,
           });
           if (!isManagerNode(node)) {
-            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "failed");
+            this.notifyManagersAboutSubordinateCompletion(runId, node.id, "failed", runIndex);
           }
           return;
         }
@@ -765,9 +839,9 @@ export class GraphOrchestrator {
         this.store.setNodeResult(runId, node.id, result, artifacts);
 
         if (isManagerNode(node)) {
-          this.createManagerTraceEntries(runId, node, result);
+          this.createManagerTraceEntries(runId, node, result, runIndex);
         } else {
-          this.notifyManagersAboutSubordinateCompletion(runId, node.id, "completed");
+          this.notifyManagersAboutSubordinateCompletion(runId, node.id, "completed", runIndex);
         }
 
         return;
@@ -807,6 +881,7 @@ export class GraphOrchestrator {
             runId,
             node.id,
             this.store.isRunCancelRequested(runId) ? "canceled" : "failed",
+            runIndex,
           );
         }
         return;
@@ -814,8 +889,13 @@ export class GraphOrchestrator {
     }
   }
 
-  private buildPrompt(runId: string, node: GraphNode, dependencyIds: string[]): string {
-    const run = this.store.getRunForExecution(runId);
+  private buildPrompt(
+    runId: string,
+    node: GraphNode,
+    dependencyIds: string[],
+    runIndex: RunStaticIndex,
+  ): string {
+    const run = this.store.getRunViewForExecution(runId);
     if (!run) {
       return node.config.prompt?.trim() || `Execute node '${node.label}'.`;
     }
@@ -823,7 +903,7 @@ export class GraphOrchestrator {
     const dependenciesSection = dependencyIds
       .map((dependencyId) => {
         const state = run.nodeStates[dependencyId];
-        const dependencyNode = run.nodes.find((candidate) => candidate.id === dependencyId);
+        const dependencyNode = runIndex.nodeById.get(dependencyId);
         const header = dependencyNode
           ? `${dependencyNode.label} (${dependencyNode.id})`
           : dependencyId;
@@ -858,8 +938,8 @@ export class GraphOrchestrator {
 
     const assignmentSection = this.buildManagerAssignmentSection(run, node.id);
     const kickoffSection = this.buildRunKickoffSection(run, node);
-    const managerPlanningSection = this.buildManagerPlanningSection(run, node);
-    const subordinatesSection = this.buildManagerSubordinatesSection(run, node);
+    const managerPlanningSection = this.buildManagerPlanningSection(run, node, runIndex);
+    const subordinatesSection = this.buildManagerSubordinatesSection(run, node, runIndex);
 
     const sections = [basePrompt];
     if (subordinatesSection) {
@@ -881,18 +961,23 @@ export class GraphOrchestrator {
     return sections.join("\n\n");
   }
 
-  private buildManagerSubordinatesSection(run: GraphRun, node: GraphNode): string | undefined {
+  private buildManagerSubordinatesSection(
+    run: GraphRun,
+    node: GraphNode,
+    runIndex: RunStaticIndex,
+  ): string | undefined {
     if (!isManagerNode(node)) {
       return undefined;
     }
 
-    const lines: string[] = [];
-    for (const edge of run.edges) {
-      if (edge.fromNodeId !== node.id) {
-        continue;
-      }
+    const outgoing = runIndex.managerToWorkerEdgesByManagerNodeId.get(node.id) ?? [];
+    if (outgoing.length === 0) {
+      return undefined;
+    }
 
-      const worker = run.nodes.find((candidate) => candidate.id === edge.toNodeId);
+    const lines: string[] = [];
+    for (const edge of outgoing) {
+      const worker = runIndex.nodeById.get(edge.toNodeId);
       if (!worker) {
         continue;
       }
@@ -903,7 +988,7 @@ export class GraphOrchestrator {
         `  type=${worker.type}`,
         `  role=${worker.config.role}`,
         `  agent=${worker.config.agentId}`,
-        `  relationType=${edge.relationType}`,
+        "  relationType=manager_to_worker",
       ];
       if (metadataSummary) {
         profile.push(`  metadata=${metadataSummary}`);
@@ -918,18 +1003,23 @@ export class GraphOrchestrator {
     return lines.join("\n");
   }
 
-  private buildManagerPlanningSection(run: GraphRun, node: GraphNode): string | undefined {
+  private buildManagerPlanningSection(
+    run: GraphRun,
+    node: GraphNode,
+    runIndex: RunStaticIndex,
+  ): string | undefined {
     if (!isManagerNode(node)) {
       return undefined;
     }
 
-    const workers: Array<{ id: string; label: string; relationType: string }> = [];
-    for (const edge of run.edges) {
-      if (edge.fromNodeId !== node.id) {
-        continue;
-      }
+    const outgoing = runIndex.managerToWorkerEdgesByManagerNodeId.get(node.id) ?? [];
+    if (outgoing.length === 0) {
+      return undefined;
+    }
 
-      const worker = run.nodes.find((candidate) => candidate.id === edge.toNodeId);
+    const workers: Array<{ id: string; label: string; relationType: string }> = [];
+    for (const edge of outgoing) {
+      const worker = runIndex.nodeById.get(edge.toNodeId);
       if (!worker) {
         continue;
       }
@@ -937,7 +1027,7 @@ export class GraphOrchestrator {
       workers.push({
         id: worker.id,
         label: worker.label,
-        relationType: edge.relationType,
+        relationType: "manager_to_worker",
       });
     }
 
@@ -1001,18 +1091,37 @@ export class GraphOrchestrator {
       .join("\n");
   }
 
-  private createManagerTraceEntries(runId: string, managerNode: GraphNode, result: RunResult): void {
-    const run = this.store.getRunForExecution(runId);
+  private createManagerTraceEntries(
+    runId: string,
+    managerNode: GraphNode,
+    result: RunResult,
+    runIndex: RunStaticIndex,
+  ): void {
+    const run = this.store.getRunViewForExecution(runId);
     if (!run) {
       return;
     }
 
-    const outgoing = run.edges.filter((edge) => edge.fromNodeId === managerNode.id);
+    const outgoing = runIndex.managerToWorkerEdgesByManagerNodeId.get(managerNode.id) ?? [];
     if (outgoing.length === 0) {
       return;
     }
 
     const parsedAssignments = parseManagerAssignments(result.output);
+    const assignmentsByWorkerId = new Map<string, ParsedManagerAssignment>();
+    const assignmentsByWorkerLabel = new Map<string, ParsedManagerAssignment>();
+    for (const assignment of parsedAssignments) {
+      const workerId = assignment.workerNodeId?.trim();
+      if (workerId && !assignmentsByWorkerId.has(workerId)) {
+        assignmentsByWorkerId.set(workerId, assignment);
+      }
+
+      const workerLabel = assignment.workerLabel?.trim().toLowerCase();
+      if (workerLabel && !assignmentsByWorkerLabel.has(workerLabel)) {
+        assignmentsByWorkerLabel.set(workerLabel, assignment);
+      }
+    }
+
     const managerOutputTask = result.output.trim()
       ? truncateText(result.output.trim(), MAX_DEPENDENCY_OUTPUT)
       : undefined;
@@ -1020,22 +1129,14 @@ export class GraphOrchestrator {
     const totalWorkers = outgoing.length;
 
     for (const [index, edge] of outgoing.entries()) {
-      const worker = run.nodes.find((node) => node.id === edge.toNodeId);
+      const worker = runIndex.nodeById.get(edge.toNodeId);
       if (!worker) {
         continue;
       }
 
-      const assignment = parsedAssignments.find((candidate) => {
-        if (candidate.workerNodeId && candidate.workerNodeId === worker.id) {
-          return true;
-        }
-
-        if (candidate.workerLabel && candidate.workerLabel.toLowerCase() === worker.label.toLowerCase()) {
-          return true;
-        }
-
-        return false;
-      });
+      const assignment =
+        assignmentsByWorkerId.get(worker.id) ??
+        assignmentsByWorkerLabel.get(worker.label.toLowerCase());
 
       const fallbackTask = fallbackObjective
         ? [
@@ -1054,22 +1155,34 @@ export class GraphOrchestrator {
           fallbackTask,
         reason:
           assignment?.reason ||
-          `auto-partition fallback; relationType=${edge.relationType}; partition=${index + 1}/${totalWorkers}`,
+          `auto-partition fallback; relationType=manager_to_worker; partition=${index + 1}/${totalWorkers}`,
       });
     }
+  }
+
+  private feedbackEnabledForWorker(node: GraphNode): boolean {
+    const isWorkerLike =
+      node.type === "worker" ||
+      node.type === "agent" ||
+      node.config.role === "worker";
+    if (!isWorkerLike) {
+      return false;
+    }
+    return node.config.feedbackToManagerEnabled !== false;
   }
 
   private notifyManagersAboutSubordinateCompletion(
     runId: string,
     workerNodeId: string,
     status: "completed" | "failed" | "canceled",
+    runIndex: RunStaticIndex,
   ): void {
-    const run = this.store.getRunForExecution(runId);
+    const run = this.store.getRunViewForExecution(runId);
     if (!run) {
       return;
     }
 
-    const worker = run.nodes.find((node) => node.id === workerNodeId);
+    const worker = runIndex.nodeById.get(workerNodeId);
     if (!worker) {
       return;
     }
@@ -1081,21 +1194,20 @@ export class GraphOrchestrator {
       || "No summary available.";
     const resultFiles = state?.artifacts?.resultFiles ?? [];
 
-    const managerTargets = run.edges
-      .filter(
-        (edge) =>
-          edge.fromNodeId === workerNodeId &&
-          edge.relationType === "feedback",
-      )
-      .map((edge) => run.nodes.find((node) => node.id === edge.toNodeId))
-      .filter((node): node is GraphNode => {
-        if (!node) {
-          return false;
-        }
-        return isManagerNode(node);
-      });
+    if (!this.feedbackEnabledForWorker(worker)) {
+      return;
+    }
 
+    const managerTargets = [
+      ...(runIndex.managersByWorkerNodeId.get(workerNodeId) ?? []),
+      ...(runIndex.legacyFeedbackManagersByWorkerNodeId.get(workerNodeId) ?? []),
+    ];
+    const seenManagerIds = new Set<string>();
     for (const manager of managerTargets) {
+      if (seenManagerIds.has(manager.id)) {
+        continue;
+      }
+      seenManagerIds.add(manager.id);
       this.store.addNodeMessage(
         run.graphId,
         manager.id,
@@ -1114,24 +1226,38 @@ export class GraphOrchestrator {
   private publishRunSummaryToManagers(
     run: GraphRun,
     finalStatus: "completed" | "failed" | "canceled",
+    runIndex: RunStaticIndex,
   ): void {
-    const managers = run.nodes.filter((node) => isManagerNode(node));
+    const managers = [...runIndex.nodeById.values()].filter((node) => isManagerNode(node));
     if (managers.length === 0) {
       return;
     }
 
     for (const manager of managers) {
-      const subordinateEdges = run.edges.filter(
-        (edge) => edge.toNodeId === manager.id && edge.relationType === "feedback",
-      );
-      if (subordinateEdges.length === 0) {
+      const implicitEdges = runIndex.managerToWorkerEdgesByManagerNodeId.get(manager.id) ?? [];
+      const legacyEdges = runIndex.legacyFeedbackEdgesByManagerNodeId.get(manager.id) ?? [];
+
+      const workerIds = new Set<string>();
+      for (const edge of implicitEdges) {
+        workerIds.add(edge.toNodeId);
+      }
+      if (workerIds.size === 0) {
+        for (const edge of legacyEdges) {
+          workerIds.add(edge.fromNodeId);
+        }
+      }
+
+      if (workerIds.size === 0) {
         continue;
       }
 
-      const lines = subordinateEdges.map((edge) => {
-        const worker = run.nodes.find((node) => node.id === edge.fromNodeId);
+      const lines = [...workerIds].map((workerId) => {
+        const worker = runIndex.nodeById.get(workerId);
         if (!worker) {
-          return `- unknown worker (${edge.fromNodeId}): no data`;
+          return `- unknown worker (${workerId}): no data`;
+        }
+        if (!this.feedbackEnabledForWorker(worker)) {
+          return `- ${worker.label} (${worker.id}) | feedback disabled`;
         }
 
         const state = run.nodeStates[worker.id];

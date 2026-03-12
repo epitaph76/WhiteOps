@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../models/graph_editor_models.dart';
 import '../state/graph_editor_controller.dart';
 import 'graph_ui_models.dart';
+import 'make_tokens.dart';
 
 class GraphCanvasView extends StatefulWidget {
   const GraphCanvasView({
@@ -35,7 +36,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
   void initState() {
     super.initState();
     _transformationController.value = Matrix4.identity()
-      ..translate(160.0, 120.0)
+      ..translate(180.0, 120.0)
       ..scale(1.0);
     _transformationController.addListener(_onTransformChanged);
   }
@@ -57,7 +58,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
       try {
         _connectingPointerScene = _globalToScene(connectionGlobal);
       } catch (_) {
-        // Viewer can be transiently unavailable during relayout.
+        // During relayout viewer can be unavailable for one frame.
       }
     }
 
@@ -66,8 +67,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
+    return GlassCard(
       child: LayoutBuilder(
         builder: (context, constraints) {
           final viewportSize = Size(
@@ -85,14 +85,15 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
                   final isDropHover = candidateData.isNotEmpty;
                   return AnimatedContainer(
                     duration: const Duration(milliseconds: 120),
-                    decoration: isDropHover
-                        ? BoxDecoration(
-                            border: Border.all(
-                              color: const Color(0xFF2C7FB8),
-                              width: 2,
-                            ),
-                          )
-                        : null,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(MakeTokens.radiusLg),
+                      border: Border.all(
+                        color: isDropHover
+                            ? MakeTokens.primary
+                            : Colors.transparent,
+                        width: 2,
+                      ),
+                    ),
                     child: MouseRegion(
                       onHover: (event) {
                         if (_connectingFromNodeId == null) {
@@ -156,46 +157,76 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
 
   Widget _buildCanvasToolbar() {
     final scale = _transformationController.value.getMaxScaleOnAxis();
-    return Material(
-      elevation: 3,
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              onPressed: () => _zoomBy(0.9),
-              icon: const Icon(Icons.remove),
-              tooltip: 'Уменьшить',
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: MakeTokens.surfaceStrong,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: MakeTokens.border),
+        boxShadow: MakeTokens.softShadow,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _toolButton(
+            icon: Icons.remove,
+            tooltip: 'Zoom out',
+            onTap: () => _zoomBy(0.9),
+          ),
+          _toolButton(
+            icon: Icons.add,
+            tooltip: 'Zoom in',
+            onTap: () => _zoomBy(1.1),
+          ),
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.8),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: MakeTokens.border),
             ),
-            SizedBox(
-              width: 62,
-              child: Text(
-                '${(scale * 100).round()}%',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
+            child: Text(
+              '${(scale * 100).round()}%',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: MakeTokens.muted,
               ),
             ),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              onPressed: () => _zoomBy(1.1),
-              icon: const Icon(Icons.add),
-              tooltip: 'Увеличить',
+          ),
+          _toolButton(
+            icon: Icons.center_focus_strong,
+            tooltip: 'Reset view',
+            onTap: _resetView,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _toolButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: MakeTokens.border),
+              color: Colors.white.withValues(alpha: 0.9),
             ),
-            const VerticalDivider(width: 18, thickness: 1),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              onPressed: _resetView,
-              icon: const Icon(Icons.center_focus_strong),
-              tooltip: 'Сбросить вид',
-            ),
-          ],
+            child: Icon(icon, size: 16, color: MakeTokens.text),
+          ),
         ),
       ),
     );
@@ -204,12 +235,13 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
   Widget _buildMiniMap(Size viewportSize) {
     final sceneViewport = _sceneViewportRect(viewportSize);
     return Container(
-      width: 220,
-      height: 148,
+      width: 180,
+      height: 118,
       decoration: BoxDecoration(
-        color: const Color(0xECFFFFFF),
+        color: MakeTokens.surfaceStrong,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFCCD7E4)),
+        border: Border.all(color: MakeTokens.border),
+        boxShadow: MakeTokens.softShadow,
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
@@ -273,10 +305,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
         onOutputConnectUpdate: _updateConnectionPointer,
         onOutputConnectEnd: _completeConnectionByPointer,
         onOutputConnectCancel: _cancelConnection,
-        onInputDoubleTap: () {
-          _completeConnectionTo(node.id);
-        },
-        extraOutputPorts: 0,
+        nodePanEnabled: _connectingFromNodeId == null,
       ),
     );
   }
@@ -295,10 +324,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
       return null;
     }
 
-    final start = Offset(
-      fromNode.x + graphNodeWidth,
-      fromNode.y + graphNodePortCenterY,
-    );
+    final start = _outputAnchorForNode(fromNode);
 
     return TempEdge(
       from: start,
@@ -396,7 +422,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
 
   void _resetView() {
     _transformationController.value = Matrix4.identity()
-      ..translate(160.0, 120.0)
+      ..translate(180.0, 120.0)
       ..scale(1.0);
     setState(() {});
   }
@@ -434,7 +460,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
       return renderObject;
     }
 
-    throw StateError('RenderBox канваса недоступен.');
+    throw StateError('Canvas RenderBox is unavailable.');
   }
 
   Offset _globalToScene(Offset globalPosition) {
@@ -444,7 +470,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
   }
 
   GraphEdgeModel? _findEdgeNearPoint(Offset scenePoint) {
-    const hitDistance = 8.0;
+    const hitDistance = 10.0;
 
     GraphEdgeModel? best;
     var bestDistance = double.infinity;
@@ -460,13 +486,10 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
         continue;
       }
 
-      final start = Offset(
-        from.x + graphNodeWidth,
-        from.y + graphNodePortCenterY,
-      );
-      final end = Offset(to.x, to.y + graphNodePortCenterY);
-      final c1 = Offset(start.dx + 80, start.dy);
-      final c2 = Offset(end.dx - 80, end.dy);
+      final start = Offset(from.x + (graphNodeWidth / 2), from.y + 104);
+      final end = Offset(to.x + (graphNodeWidth / 2), to.y + 20);
+      final c1 = Offset(start.dx, start.dy - 90);
+      final c2 = Offset(end.dx, end.dy + 90);
       final distance = _distanceToBezier(scenePoint, start, c1, c2, end);
       if (distance < hitDistance && distance < bestDistance) {
         best = edge;
@@ -479,8 +502,8 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
 
   GraphNodeModel? _findNodeAtScene(Offset scenePoint) {
     for (final node in widget.controller.nodes.reversed) {
-      final rect = Rect.fromLTWH(node.x, node.y, graphNodeWidth, graphNodeHeight);
-      if (rect.contains(scenePoint)) {
+      final bounds = Rect.fromLTWH(node.x, node.y, graphNodeWidth, graphNodeHeight);
+      if (bounds.inflate(12).contains(scenePoint)) {
         return node;
       }
     }
@@ -495,7 +518,7 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
     Offset p3,
   ) {
     var best = double.infinity;
-    const steps = 26;
+    const steps = 30;
 
     for (var i = 0; i <= steps; i += 1) {
       final t = i / steps;
@@ -515,6 +538,10 @@ class _GraphCanvasViewState extends State<GraphCanvasView> {
         p2 * (3 * inverse * t * t) +
         p3 * (t * t * t);
   }
+
+  Offset _outputAnchorForNode(GraphNodeModel node) {
+    return Offset(node.x + (graphNodeWidth / 2), node.y + 104);
+  }
 }
 
 class GraphNodeCard extends StatelessWidget {
@@ -531,8 +558,7 @@ class GraphNodeCard extends StatelessWidget {
     required this.onOutputConnectUpdate,
     required this.onOutputConnectEnd,
     required this.onOutputConnectCancel,
-    required this.extraOutputPorts,
-    required this.onInputDoubleTap,
+    required this.nodePanEnabled,
     super.key,
   });
 
@@ -548,235 +574,168 @@ class GraphNodeCard extends StatelessWidget {
   final ValueChanged<Offset> onOutputConnectUpdate;
   final VoidCallback onOutputConnectEnd;
   final VoidCallback onOutputConnectCancel;
-  final int extraOutputPorts;
-  final VoidCallback onInputDoubleTap;
+  final bool nodePanEnabled;
 
   @override
   Widget build(BuildContext context) {
-    final palette = _nodePalette(status);
+    final roleStyle = MakeTokens.rolePalette(node.config.role);
+    final statusStyle = MakeTokens.statusPalette(status);
 
     return GestureDetector(
       onTap: onTap,
       onDoubleTap: onDoubleTap,
-      onPanStart: (_) => onPanStart(),
-      onPanUpdate: (details) => onPanUpdate(details.delta),
-      child: Container(
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFFE7F4FF) : Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: selected ? const Color(0xFF2D7CB8) : const Color(0xFFC8D7E8),
-            width: selected ? 2 : 1.2,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.06),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Positioned(
-              left: -8,
-              top: 46,
-              child: GestureDetector(
-                onDoubleTap: onInputDoubleTap,
-                child: _PortDot(
-                  color: const Color(0xFF3F6282),
-                  tooltip: 'Входной порт (двойной клик для связи)',
+      onPanStart: nodePanEnabled ? (_) => onPanStart() : null,
+      onPanUpdate: nodePanEnabled ? (details) => onPanUpdate(details.delta) : null,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.topCenter,
+        children: [
+          Positioned(
+            top: 12,
+            child: Container(
+              width: 90,
+              height: 90,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.88),
+                border: Border.all(
+                  color: selected ? roleStyle.ring : MakeTokens.border,
+                  width: selected ? 2.0 : 1.2,
                 ),
-              ),
-            ),
-            Positioned(
-              right: -8,
-              top: 46,
-              child: GestureDetector(
-                onPanStart: (details) =>
-                    onOutputConnectStart(details.globalPosition),
-                onPanUpdate: (details) =>
-                    onOutputConnectUpdate(details.globalPosition),
-                onPanEnd: (_) => onOutputConnectEnd(),
-                onPanCancel: onOutputConnectCancel,
-                child: _PortDot(
-                  color: const Color(0xFF1D7F76),
-                  tooltip: 'Выходной порт (зажмите и тяните для связи)',
-                ),
-              ),
-            ),
-            for (var index = 0; index < extraOutputPorts; index += 1)
-              Positioned(
-                right: -8,
-                top: 74 + (index * 22),
-                child: GestureDetector(
-                  onPanStart: (details) =>
-                      onOutputConnectStart(details.globalPosition),
-                  onPanUpdate: (details) =>
-                      onOutputConnectUpdate(details.globalPosition),
-                  onPanEnd: (_) => onOutputConnectEnd(),
-                  onPanCancel: onOutputConnectCancel,
-                  child: const _PortDot(
-                    color: Color(0xFF5A7F2A),
-                    tooltip:
-                        'Дополнительный порт менеджера (зажмите и тяните для связи)',
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x1C1A2D4E),
+                    blurRadius: 16,
+                    offset: Offset(0, 8),
                   ),
+                ],
+              ),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: roleStyle.bg,
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      node.config.role,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: MakeTokens.text,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      node.config.agentId,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: MakeTokens.muted,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            ),
+          ),
+          Positioned(top: 8, child: _statusDot(statusStyle.fg)),
+          Positioned(
+            top: 98,
+            child: GestureDetector(
+              onPanStart: (details) =>
+                  onOutputConnectStart(details.globalPosition),
+              onPanUpdate: (details) =>
+                  onOutputConnectUpdate(details.globalPosition),
+              onPanEnd: (_) => onOutputConnectEnd(),
+              onPanCancel: onOutputConnectCancel,
+              child: _portDot(const Color(0xFF14B87A)),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 108,
+            child: Column(
               children: [
                 Text(
                   node.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
                   style: const TextStyle(
-                    fontSize: 14,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
+                    color: MakeTokens.text,
                   ),
                 ),
                 const SizedBox(height: 2),
-                Text(
-                  '${node.type} | ${node.config.agentId} / ${node.config.role} | ${node.config.fullAccess ? 'full-access' : 'sandbox'}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 11.5,
-                    color: Color(0xFF596B82),
-                  ),
-                ),
-                const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
-                    vertical: 4,
+                    vertical: 3,
                   ),
                   decoration: BoxDecoration(
-                    color: palette.background,
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: palette.border),
+                    border: Border.all(color: statusStyle.border),
+                    color: statusStyle.bg,
                   ),
                   child: Text(
                     nodeExecutionStatusLabel(status),
                     style: TextStyle(
-                      fontSize: 11,
-                      color: palette.foreground,
+                      fontSize: 10,
                       fontWeight: FontWeight.w600,
+                      color: statusStyle.fg,
                     ),
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'таймаут: ${node.config.timeoutMs ?? '-'} мс | повторы: ${node.config.maxRetries ?? 0}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF607286),
-                  ),
-                ),
-                if (errorText != null && errorText!.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    errorText!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 10.5,
-                      color: Color(0xFF8E2A2A),
+                if ((errorText ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      errorText!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: MakeTokens.danger,
+                      ),
                     ),
                   ),
                 ],
               ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  _BadgePalette _nodePalette(String value) {
-    switch (value) {
-      case 'ready':
-        return const _BadgePalette(
-          foreground: Color(0xFF165E8B),
-          background: Color(0xFFE2F1FC),
-          border: Color(0xFFA7D0ED),
-        );
-      case 'running':
-        return const _BadgePalette(
-          foreground: Color(0xFF115C4F),
-          background: Color(0xFFDDF8F2),
-          border: Color(0xFF97DEC9),
-        );
-      case 'retrying':
-        return const _BadgePalette(
-          foreground: Color(0xFF7B5306),
-          background: Color(0xFFFFF1D8),
-          border: Color(0xFFFFD58D),
-        );
-      case 'completed':
-        return const _BadgePalette(
-          foreground: Color(0xFF106A26),
-          background: Color(0xFFDDF9E3),
-          border: Color(0xFFA1E1AF),
-        );
-      case 'failed':
-        return const _BadgePalette(
-          foreground: Color(0xFF8E2222),
-          background: Color(0xFFFFE8E8),
-          border: Color(0xFFF2AEAE),
-        );
-      case 'canceled':
-      case 'skipped':
-        return const _BadgePalette(
-          foreground: Color(0xFF70510D),
-          background: Color(0xFFFFF0D4),
-          border: Color(0xFFFFCF89),
-        );
-      default:
-        return const _BadgePalette(
-          foreground: Color(0xFF52617A),
-          background: Color(0xFFEDF2F8),
-          border: Color(0xFFD1DAE6),
-        );
-    }
-  }
-}
-
-class _PortDot extends StatelessWidget {
-  const _PortDot({required this.color, required this.tooltip});
-
-  final Color color;
-  final String tooltip;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: Container(
-        width: 14,
-        height: 14,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 1.4),
-        ),
+  Widget _statusDot(Color color) {
+    return Container(
+      width: 12,
+      height: 12,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: color,
+        border: Border.all(color: Colors.white, width: 2),
       ),
     );
   }
-}
 
-class _BadgePalette {
-  const _BadgePalette({
-    required this.foreground,
-    required this.background,
-    required this.border,
-  });
-
-  final Color foreground;
-  final Color background;
-  final Color border;
+  Widget _portDot(Color color) {
+    return Container(
+      width: 12,
+      height: 12,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 1.6),
+      ),
+    );
+  }
 }
 
 class TempEdge {
@@ -814,12 +773,12 @@ class GraphCanvasPainter extends CustomPainter {
   }
 
   void _paintGrid(Canvas canvas, Size size) {
-    final minor = Paint()
-      ..color = const Color(0xFFEBF1F7)
-      ..strokeWidth = 1;
     final major = Paint()
-      ..color = const Color(0xFFD8E3EE)
-      ..strokeWidth = 1.4;
+      ..color = const Color(0x19708EB8)
+      ..strokeWidth = 1;
+    final minor = Paint()
+      ..color = const Color(0x116E8AB3)
+      ..strokeWidth = 1;
 
     for (double x = 0; x <= size.width; x += GraphEditorController.gridSize) {
       final paint = (x / GraphEditorController.gridSize).round() % 5 == 0
@@ -846,38 +805,40 @@ class GraphCanvasPainter extends CustomPainter {
         continue;
       }
 
-      final start = Offset(
-        from.x + graphNodeWidth,
-        from.y + graphNodePortCenterY,
-      );
-      final end = Offset(to.x, to.y + graphNodePortCenterY);
+      final start = Offset(from.x + (graphNodeWidth / 2), from.y + 104);
+      final end = Offset(to.x + (graphNodeWidth / 2), to.y + 20);
 
-      final c1 = Offset(start.dx + 80, start.dy);
-      final c2 = Offset(end.dx - 80, end.dy);
+      final c1 = Offset(start.dx, start.dy - 80);
+      final c2 = Offset(end.dx, end.dy + 80);
       final path = Path()
         ..moveTo(start.dx, start.dy)
         ..cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, end.dx, end.dy);
 
       final isSelected = edge.id == selectedEdgeId;
+      final color = MakeTokens.edgeColor(
+        edge.relationType,
+      ).withValues(alpha: isSelected ? 0.95 : 0.8);
+
       final paint = Paint()
-        ..color = _edgeColor(edge.relationType, selected: isSelected)
+        ..color = color
         ..style = PaintingStyle.stroke
-        ..strokeWidth = isSelected ? 3.2 : 2.0;
+        ..strokeWidth = isSelected ? 3.0 : 2.0;
 
       canvas.drawPath(path, paint);
-      _drawArrow(canvas, end, c2, paint.color, isSelected ? 8 : 7);
-      _drawEdgeLabel(canvas, edge, path, isSelected);
+      _drawArrow(canvas, end, c2, color, isSelected ? 8 : 7);
+      _drawEdgeLabel(canvas, edge, path, color, isSelected);
     }
   }
 
   void _paintTempEdge(Canvas canvas, TempEdge edge) {
+    final color = MakeTokens.edgeColor(edge.relationType);
     final paint = Paint()
-      ..color = const Color(0xCC167E75)
+      ..color = color.withValues(alpha: 0.7)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.2;
 
-    final c1 = Offset(edge.from.dx + 70, edge.from.dy);
-    final c2 = Offset(edge.to.dx - 70, edge.to.dy);
+    final c1 = Offset(edge.from.dx, edge.from.dy - 70);
+    final c2 = Offset(edge.to.dx, edge.to.dy + 70);
 
     final path = Path()
       ..moveTo(edge.from.dx, edge.from.dy)
@@ -913,6 +874,7 @@ class GraphCanvasPainter extends CustomPainter {
     Canvas canvas,
     GraphEdgeModel edge,
     Path path,
+    Color color,
     bool selected,
   ) {
     final metricsIterator = path.computeMetrics().iterator;
@@ -926,13 +888,13 @@ class GraphCanvasPainter extends CustomPainter {
       return;
     }
 
-    final text = relationTypeLabel(edge.relationType);
+    final text = edge.relationType;
     final span = TextSpan(
       text: text,
       style: TextStyle(
-        fontSize: 10.5,
-        color: selected ? const Color(0xFF0E4B6E) : const Color(0xFF445D78),
-        fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+        fontSize: 10,
+        color: selected ? color : const Color(0xFF455D7D),
+        fontWeight: FontWeight.w600,
       ),
     );
 
@@ -945,22 +907,22 @@ class GraphCanvasPainter extends CustomPainter {
     final rect = RRect.fromRectAndRadius(
       Rect.fromCenter(
         center: tangent.position,
-        width: painter.width + 10,
+        width: painter.width + 12,
         height: painter.height + 6,
       ),
-      const Radius.circular(6),
+      const Radius.circular(7),
     );
 
     canvas.drawRRect(
       rect,
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.92)
+        ..color = Colors.white.withValues(alpha: 0.9)
         ..style = PaintingStyle.fill,
     );
     canvas.drawRRect(
       rect,
       Paint()
-        ..color = const Color(0xFFD3E0EE)
+        ..color = MakeTokens.border
         ..style = PaintingStyle.stroke,
     );
 
@@ -968,20 +930,6 @@ class GraphCanvasPainter extends CustomPainter {
       canvas,
       tangent.position - Offset(painter.width / 2, painter.height / 2),
     );
-  }
-
-  Color _edgeColor(String relationType, {required bool selected}) {
-    final base = switch (relationType) {
-      'manager_to_worker' => const Color(0xFF1A7A71),
-      'dependency' => const Color(0xFF2A628E),
-      'peer' => const Color(0xFF734A86),
-      'feedback' => const Color(0xFF9A5A24),
-      _ => const Color(0xFF5B6D83),
-    };
-    if (selected) {
-      return base.withValues(alpha: 0.95);
-    }
-    return base.withValues(alpha: 0.86);
   }
 
   @override
@@ -1009,18 +957,13 @@ class MiniMapPainter extends CustomPainter {
     final scaleX = size.width / graphCanvasWidth;
     final scaleY = size.height / graphCanvasHeight;
 
-    final nodePaint = Paint()..color = const Color(0xFF96B4D3);
+    final nodePaint = Paint()..color = const Color(0x885D89C5);
     for (final node in nodes) {
-      final rect = Rect.fromLTWH(
-        node.x * scaleX,
-        node.y * scaleY,
-        graphNodeWidth * scaleX,
-        graphNodeHeight * scaleY,
+      final center = Offset(
+        (node.x + (graphNodeWidth / 2)) * scaleX,
+        (node.y + 44) * scaleY,
       );
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(rect, const Radius.circular(3)),
-        nodePaint,
-      );
+      canvas.drawCircle(center, 4, nodePaint);
     }
 
     final viewRect = Rect.fromLTWH(
@@ -1042,7 +985,7 @@ class MiniMapPainter extends CustomPainter {
       Paint()
         ..color = const Color(0xFF247AB5)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4,
+        ..strokeWidth = 1.2,
     );
   }
 

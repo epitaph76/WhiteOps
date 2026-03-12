@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { AuthActor } from "../auth/auth";
@@ -31,6 +32,7 @@ const MAX_RUN_EVENTS = 1_500;
 const MAX_NODE_MESSAGES = 500;
 const MAX_NODE_LOGS = 2_000;
 const SNAPSHOT_VERSION = 2;
+const DEFAULT_PERSIST_DEBOUNCE_MS = 120;
 
 interface GraphRecord {
   id: string;
@@ -104,6 +106,7 @@ export interface GraphStoreOptions {
   maxRunEvents?: number;
   maxNodeMessages?: number;
   maxNodeLogs?: number;
+  persistDebounceMs?: number;
   initialSnapshot?: PersistedGraphStoreSnapshot;
   onPersistSnapshot?: (snapshot: PersistedGraphStoreSnapshot) => void;
 }
@@ -197,8 +200,12 @@ function ensureNonNegativeInteger(value: unknown, fallback: number): number {
 export class GraphStore {
   private readonly graphs = new Map<string, GraphRecord>();
   private readonly runs = new Map<string, GraphRunRecord>();
+  private readonly graphRunIds = new Map<string, Set<string>>();
+  private readonly recoverableRunIds = new Set<string>();
   private readonly nodeMessages = new Map<string, NodeChatMessage[]>();
+  private readonly nodeMessageBucketKeysByNodeId = new Map<string, Set<string>>();
   private readonly nodeLogs = new Map<string, NodeLogEntry[]>();
+  private readonly nodeLogBucketKeysByNodeId = new Map<string, Set<string>>();
   private readonly nodeAttempts = new Map<string, NodeAttemptRecord>();
   private readonly emitter = new EventEmitter();
 
@@ -207,11 +214,20 @@ export class GraphStore {
   private readonly maxNodeLogs: number;
   private readonly persistenceFilePath?: string;
   private readonly onPersistSnapshot?: (snapshot: PersistedGraphStoreSnapshot) => void;
+  private readonly persistDebounceMs: number;
+  private persistTimer: NodeJS.Timeout | undefined;
+  private persistQueued = false;
+  private persistInFlight = false;
+  private persistQueuedWhileInFlight = false;
 
   constructor(options: GraphStoreOptions = {}) {
     this.maxRunEvents = Math.max(50, options.maxRunEvents ?? MAX_RUN_EVENTS);
     this.maxNodeMessages = Math.max(50, options.maxNodeMessages ?? MAX_NODE_MESSAGES);
     this.maxNodeLogs = Math.max(100, options.maxNodeLogs ?? MAX_NODE_LOGS);
+    this.persistDebounceMs = Math.max(
+      0,
+      Math.min(5_000, assertNonNegativeInteger(options.persistDebounceMs, "persistDebounceMs") ?? DEFAULT_PERSIST_DEBOUNCE_MS),
+    );
     this.persistenceFilePath = options.persistenceFilePath?.trim() || undefined;
     this.onPersistSnapshot = options.onPersistSnapshot;
 
@@ -237,8 +253,9 @@ export class GraphStore {
 
   listRecoverableRunIds(limit = 100): string[] {
     const clampedLimit = Math.max(1, Math.min(limit, 1_000));
-    return [...this.runs.values()]
-      .filter((run) => run.status === "queued" || run.status === "running")
+    return [...this.recoverableRunIds]
+      .map((runId) => this.runs.get(runId))
+      .filter((run): run is GraphRunRecord => Boolean(run))
       .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
       .slice(0, clampedLimit)
       .map((run) => run.runId);
@@ -280,6 +297,7 @@ export class GraphStore {
         status: run.status,
         cancelRequested: run.cancelRequested,
       });
+      this.refreshRecoverableRun(run);
       this.persistState();
     }
 
@@ -432,6 +450,7 @@ export class GraphStore {
     };
 
     this.runs.set(runId, run);
+    this.indexRun(run);
     this.persistState();
     return this.toRunSnapshot(run);
   }
@@ -444,8 +463,14 @@ export class GraphStore {
     this.assertReadable(actor, graph);
 
     const clampedLimit = Math.max(1, Math.min(limit, 200));
-    return [...this.runs.values()]
-      .filter((run) => run.graphId === graphId)
+    const runIds = this.graphRunIds.get(graphId);
+    if (!runIds) {
+      return [];
+    }
+
+    return [...runIds]
+      .map((runId) => this.runs.get(runId))
+      .filter((run): run is GraphRunRecord => Boolean(run))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, clampedLimit)
       .map((run) => this.toRunSnapshot(run));
@@ -474,10 +499,16 @@ export class GraphStore {
     const clampedLimit = Math.max(1, Math.min(options.limit ?? 500, 5_000));
     const afterSequence = Math.max(0, options.afterSequence ?? 0);
 
+    let startIndex = 0;
+    if (afterSequence > 0) {
+      startIndex = run.events.findIndex((event) => event.sequence > afterSequence);
+      if (startIndex < 0) {
+        return [];
+      }
+    }
+
     return run.events
-      .filter((event) => event.sequence > afterSequence)
-      .sort((a, b) => a.sequence - b.sequence)
-      .slice(0, clampedLimit)
+      .slice(startIndex, startIndex + clampedLimit)
       .map((event) => clone(event));
   }
 
@@ -501,6 +532,10 @@ export class GraphStore {
     return run ? this.toRunSnapshot(run) : undefined;
   }
 
+  getRunViewForExecution(runId: string): Readonly<GraphRun> | undefined {
+    return this.runs.get(runId);
+  }
+
   requestRunCancel(runId: string, actor: AuthActor): GraphRun | undefined {
     const run = this.runs.get(runId);
     if (!run) {
@@ -520,6 +555,7 @@ export class GraphStore {
       this.markRunFinished(runId, "canceled", "Canceled before start");
     }
 
+    this.refreshRecoverableRun(run);
     this.persistState();
     return this.toRunSnapshot(run);
   }
@@ -545,6 +581,7 @@ export class GraphStore {
       edges: run.edges.length,
       cwd: run.cwd,
     });
+    this.refreshRecoverableRun(run);
     this.persistState();
   }
 
@@ -560,6 +597,7 @@ export class GraphStore {
       error,
       cancelRequested: run.cancelRequested,
     });
+    this.refreshRecoverableRun(run);
     this.persistState();
   }
 
@@ -701,6 +739,7 @@ export class GraphStore {
       bucket.splice(0, bucket.length - this.maxNodeLogs);
     }
     this.nodeLogs.set(bucketKey, bucket);
+    this.registerBucketKey(this.nodeLogBucketKeysByNodeId, nodeId, bucketKey);
 
     this.pushRunEvent(run, "node_log_chunk", {
       nodeId,
@@ -745,6 +784,7 @@ export class GraphStore {
       bucket.splice(0, bucket.length - this.maxNodeLogs);
     }
     this.nodeLogs.set(bucketKey, bucket);
+    this.registerBucketKey(this.nodeLogBucketKeysByNodeId, nodeId, bucketKey);
     this.persistState();
 
     return clone(entry);
@@ -991,6 +1031,27 @@ export class GraphStore {
       bucket.splice(0, bucket.length - this.maxNodeMessages);
     }
     this.nodeMessages.set(bucketKey, bucket);
+    this.registerBucketKey(this.nodeMessageBucketKeysByNodeId, nodeId, bucketKey);
+
+    if (runId) {
+      const run = this.runs.get(runId);
+      if (run && run.graphId === graphId) {
+        run.updatedAt = message.createdAt;
+        this.pushRunEvent(
+          run,
+          "node_message",
+          {
+            nodeId,
+            messageId: message.id,
+            role: message.role,
+            text: message.text,
+            createdAt: message.createdAt,
+          },
+          nodeId,
+        );
+      }
+    }
+
     this.persistState();
 
     return clone(message);
@@ -1112,6 +1173,10 @@ export class GraphStore {
         node.config?.fullAccess,
         `nodes[${index}].config.fullAccess`,
       );
+      const feedbackToManagerEnabled = assertBoolean(
+        node.config?.feedbackToManagerEnabled,
+        `nodes[${index}].config.feedbackToManagerEnabled`,
+      );
       const metadata = assertObject(node.config?.metadata, `nodes[${index}].config.metadata`);
 
       return {
@@ -1126,6 +1191,7 @@ export class GraphStore {
           agentId,
           role,
           fullAccess: fullAccess ?? false,
+          feedbackToManagerEnabled,
           prompt: prompt || undefined,
           cwd: cwd || undefined,
           timeoutMs,
@@ -1257,16 +1323,18 @@ export class GraphStore {
       return [source.get(this.getNodeBucketKey(graphId, nodeId)) ?? []];
     }
 
-    const suffix = `::${nodeId}`;
-    const buckets: T[][] = [];
-    for (const [key, items] of source.entries()) {
-      if (key !== nodeId && !key.endsWith(suffix)) {
-        continue;
-      }
-      buckets.push(items);
+    const index =
+      source === this.nodeMessages
+        ? this.nodeMessageBucketKeysByNodeId
+        : this.nodeLogBucketKeysByNodeId;
+    const bucketKeys = index.get(nodeId);
+    if (!bucketKeys || bucketKeys.size === 0) {
+      return [];
     }
 
-    return buckets;
+    return [...bucketKeys]
+      .map((bucketKey) => source.get(bucketKey))
+      .filter((items): items is T[] => Boolean(items));
   }
 
   private buildNodeSummary(output: string, max = 360): string {
@@ -1315,8 +1383,12 @@ export class GraphStore {
 
     this.graphs.clear();
     this.runs.clear();
+    this.graphRunIds.clear();
+    this.recoverableRunIds.clear();
     this.nodeMessages.clear();
+    this.nodeMessageBucketKeysByNodeId.clear();
     this.nodeLogs.clear();
+    this.nodeLogBucketKeysByNodeId.clear();
     this.nodeAttempts.clear();
 
     for (const item of parsed.graphs) {
@@ -1366,6 +1438,7 @@ export class GraphStore {
       }
 
       this.runs.set(run.runId, run);
+      this.indexRun(run);
     }
 
     for (const bucket of parsed.nodeMessages ?? []) {
@@ -1373,6 +1446,10 @@ export class GraphStore {
         continue;
       }
       this.nodeMessages.set(bucket.key, bucket.items);
+      const nodeId = this.parseNodeIdFromBucketKey(bucket.key);
+      if (nodeId) {
+        this.registerBucketKey(this.nodeMessageBucketKeysByNodeId, nodeId, bucket.key);
+      }
     }
 
     for (const bucket of parsed.nodeLogs ?? []) {
@@ -1380,6 +1457,10 @@ export class GraphStore {
         continue;
       }
       this.nodeLogs.set(bucket.key, bucket.items);
+      const nodeId = this.parseNodeIdFromBucketKey(bucket.key);
+      if (nodeId) {
+        this.registerBucketKey(this.nodeLogBucketKeysByNodeId, nodeId, bucket.key);
+      }
     }
 
     for (const record of parsed.nodeAttempts ?? []) {
@@ -1545,25 +1626,97 @@ export class GraphStore {
   }
 
   private persistState(): void {
+    this.persistQueued = true;
+    if (this.persistDebounceMs === 0) {
+      void this.flushPersist();
+      return;
+    }
+
+    if (this.persistTimer) {
+      return;
+    }
+
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      void this.flushPersist();
+    }, this.persistDebounceMs);
+  }
+
+  private async flushPersist(): Promise<void> {
+    if (this.persistInFlight) {
+      this.persistQueuedWhileInFlight = true;
+      return;
+    }
+
+    if (!this.persistQueued) {
+      return;
+    }
+
+    this.persistInFlight = true;
+    this.persistQueued = false;
+
     const snapshot = this.buildSnapshot();
-
     const filePath = this.persistenceFilePath;
-    if (filePath) {
-      try {
-        mkdirSync(path.dirname(filePath), { recursive: true });
-        writeFileSync(filePath, JSON.stringify(snapshot), "utf8");
-      } catch (error) {
-        console.error("Failed to persist graph store snapshot", error);
-        throw error;
+
+    try {
+      if (filePath) {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, JSON.stringify(snapshot), "utf8");
       }
+
+      if (this.onPersistSnapshot) {
+        try {
+          this.onPersistSnapshot(snapshot);
+        } catch (error) {
+          console.error("Graph store snapshot callback failed", error);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to persist graph store snapshot", error);
+    } finally {
+      this.persistInFlight = false;
+      if (this.persistQueuedWhileInFlight || this.persistQueued) {
+        this.persistQueuedWhileInFlight = false;
+        void this.flushPersist();
+      }
+    }
+  }
+
+  private registerBucketKey(index: Map<string, Set<string>>, nodeId: string, bucketKey: string): void {
+    const existing = index.get(nodeId);
+    if (existing) {
+      existing.add(bucketKey);
+      return;
     }
 
-    if (this.onPersistSnapshot) {
-      try {
-        this.onPersistSnapshot(snapshot);
-      } catch (error) {
-        console.error("Graph store snapshot callback failed", error);
-      }
+    index.set(nodeId, new Set([bucketKey]));
+  }
+
+  private parseNodeIdFromBucketKey(bucketKey: string): string | undefined {
+    const separatorIndex = bucketKey.indexOf("::");
+    if (separatorIndex < 0) {
+      const legacyNodeId = bucketKey.trim();
+      return legacyNodeId || undefined;
     }
+    if (separatorIndex === bucketKey.length - 2) {
+      return undefined;
+    }
+    return bucketKey.slice(separatorIndex + 2);
+  }
+
+  private indexRun(run: GraphRunRecord): void {
+    const graphRuns = this.graphRunIds.get(run.graphId) ?? new Set<string>();
+    graphRuns.add(run.runId);
+    this.graphRunIds.set(run.graphId, graphRuns);
+    this.refreshRecoverableRun(run);
+  }
+
+  private refreshRecoverableRun(run: GraphRunRecord): void {
+    if (run.status === "queued" || run.status === "running") {
+      this.recoverableRunIds.add(run.runId);
+      return;
+    }
+
+    this.recoverableRunIds.delete(run.runId);
   }
 }
